@@ -5,35 +5,64 @@ import sys
 import random
 import os
 import math
-
-# Load CLIP model
-model = SentenceTransformer("clip-ViT-B-32")
+import copy
 
 # Colours
 white = (255, 255, 255)
 black = (0, 0, 0)
 
+# Scoring systems
+class ScoringSystem():
+    def score_image(self, image):
+        return 0
+
+class EmbeddingsScoring():
+    def __init__(self, model, text): 
+        # Load CLIP model
+        self.model = SentenceTransformer(model)
+        
+        # Encode text descriptions
+        self.text_emb = self.model.encode([text])
+
+    def score_image(self, image):
+        img_emb = self.model.encode(image)
+
+        similarity_score = self.model.similarity(img_emb, self.text_emb).tolist()[0]
+
+        return similarity_score[0]
+
+# Mutation strategies
 class MutationStrategy():
-    def __init__(self, size, pallet):
+    def __init__(self, size, scoring):
         pil_image = Image.new(mode="RGB", size=(size, size))
         draw = ImageDraw.Draw(pil_image)
-        draw.rectangle([(0, 0), (pil_image.width - 1, pil_image.height - 1)], white)
-
+        draw.rectangle([(0, 0), (pil_image.width - 1, pil_image.height - 1)], black)
         self.baseImage = pil_image
-        self.pallet = pallet
+        self.size = size
 
-    def mutate_image(self, image):
-        return image # Placeholder
-    
-    def convert_pil_image(self, image):
+        self.representation = []
+        self.best_representation = []
+
+    def mutate_image(self, temp):
+        return self.baseImage # Placeholder
+
+    def render_image(self):
         return self.baseImage
 
+    def cool():
+        # for simulated annealing
+        pass
+
 class RandomPixelFlipStrategy(MutationStrategy):
-    def mutate_image(self, image):
-        px = image.load()
-        x = random.randint(0, image.width - 1)
-        y = random.randint(0, image.height - 1)
-        self.flip_pixel(px, x, y)
+    def mutate_image(self, temp):
+        image = self.baseImage.copy()
+        px = self.image.load()
+        
+        for i in range(self.size**2 * temp):
+            x = random.randint(0, image.width - 1)
+            y = random.randint(0, image.height - 1)
+            self.flip_pixel(px, x, y)
+        
         return image
     
     def flip_pixel(self, px, x, y):
@@ -102,172 +131,272 @@ class Colour():
         print(self.pallet)
 
 class Blob():
-    def __init__(self, x, y, radius, colour):
-        self.x = x
-        self.y = y
-        self.radius = radius
-        self.colour = colour
+    def __init__(self, image_size, temp):
+        self.x = image_size // 2
+        self.y = image_size // 2
+        self.radius = 1
+        self.colour = None
+
+        self.temp = temp
+        
+        self.image_size = image_size
+
+        self.previous = None
 
     def __str__(self):
         return f"[{self.x}, {self.y}], radius: {self.radius}"
 
-    def addBlobToImage(self, image, colour):
+    def random_mutate(self, temp):
+        step_size = max(1, int((self.image_size/2) * (0.3 + 0.7 * temp)))
+
+        if self.x <= 0:
+            self.x = self.x + random.randint(0, step_size)
+        elif self.x >= self.image_size -1:
+            self.x = self.x + random.randint(-step_size, 0)
+        else:
+            self.x = self.x + random.randint(-step_size, step_size)
+
+        if self.y <= 0:
+            self.y = self.y + random.randint(0, step_size)
+        elif self.y >= self.image_size -1:
+            self.y = self.y + random.randint(-step_size, 0)
+        else:
+            self.y = self.y + random.randint(-step_size, step_size)
+
+        if self.radius <= 1:
+            self.radius = self.radius + random.randint(0, step_size)
+        elif self.radius > self.image_size // 4:
+            self.radius = self.radius + random.randint(-step_size, 0)
+        else:
+            self.radius = self.radius + random.randint(-step_size, step_size)
+
+    def rotate(self, rotation):
+        opposite = self.x - (self.image_size/2)
+        adjacent = self.y - (self.image_size/2)
+        
+        hypotonuse = math.sqrt(opposite**2 + adjacent**2)
+
+        if adjacent == 0:
+            if opposite > 0:
+                angle = math.pi/2
+            else:
+                angle = -math.pi/2
+        else:
+            angle = math.atan(opposite/adjacent)
+
+        newAngle = angle + rotation
+
+        self.x = hypotonuse * math.sin(newAngle)
+        self.y = hypotonuse * math.cos(newAngle)
+
+    def cool(self):
+        self.temp = self.temp * 0.95
+
+    def effect(self, x, y):
+        dist = (x-self.x)**2 + (y-self.y)**2
+        if dist == 0:
+            return 1000
+        return self.radius**2 / ((x-self.x)**2 + (y-self.y)**2)
+
+    def addBlobToImage(self, image, colours=None):
         px = image.load()
         for px_x in range(image.width):
             for px_y in range(image.height):
                 dist = math.pow(px_x - self.x, 2) + math.pow(px_y - self.y, 2)
                 if dist < math.pow(self.radius, 2):
-                    px[px_x, px_y] = colour.pallet[self.colour]
+
+                    if colours:
+                        px[px_x, px_y] = colours.pallet[self.colour]
+                    else:
+                        px[px_x, px_y] = black
 
 class MoveBlobsStrategy(MutationStrategy):
-    
-    def mutate_image(self, image):
-        mutateProb = 1
-        if random.random() < mutateProb:
-            rand = random.random()
-            if rand < 0.2 or len(image) <= 0:
-                # Add blob
-                x = random.randint(0, self.baseImage.width - 1)
-                y = random.randint(0, self.baseImage.height - 1)
-                radius = random.randint(0, self.baseImage.width/4)
-                
-                image.append(Blob(x, y, radius, self.pallet.randomFromPallet()))
-            elif rand < 0.4:
-                # Remove blob, weighted by radius size
-                radiuses = sum(list(map(lambda blob: blob.radius, image)))
-                rand = random.randint(0, radiuses)
-                
-                radi = 0
-                i = 0
-                for blob in image:
-                    radi = radi + blob.radius
-                    if rand < radi:
-                        image.pop(i)
-                        return image
-                    i = i + 1
-            elif rand < 0.6:
-                # Alter pallet
-                self.pallet.mutatePallet(image)
-            else:
-                rand = random.randint(0, len(image) - 1)
-                blob = image[rand]
-                if rand < 0.8:
-                    # Move blob
-                    blob.x = blob.x + random.randint(-1, 1)
-                    blob.y = blob.y + random.randint(-1, 1)
-                else:
-                    # Change blob radius
-                    blob.radius = max(1, int(blob.radius * (random.random() + 0.5)))
 
-            mutateProb = mutateProb / 2
+    def add_blob(self):
+        self.representation.append(Blob(self.size, 1))
+
+    def recenter_blobs(self):
+        offsetX = (sum(blob.x for blob in self.representation) / len(self.representation)) - (self.size/2)
+        offsetY = (sum(blob.y for blob in self.representation) / len(self.representation)) - (self.size/2)
+
+        for blob in self.representation:
+            blob.x -= offsetX
+            blob.y -= offsetY
+
+    def rotate_blobs(self, rotation):
+        for blob in self.representation:
+            blob.rotate(rotation)
+
+    def flip_blobs_x(self):
+        for blob in self.representation:
+            blob.x = -1 * blob.x
+
+    def flip_blobs_y(self):
+        for blob in self.representation:
+            blob.y = -1 * blob.y
+
+    def mutate_image(self, temp):
+        for blob in self.representation:
+            blob.random_mutate(temp)
+
+        if random.random() < temp:
+            choice = random.random()
+            if choice < 0.5:
+                rotation = 2*math.pi*(random.random()-0.5)
+                self.rotate_blobs(rotation)
+            elif choice < 0.75:
+                self.flip_blobs_x()
+            else:
+                self.flip_blobs_y()
+
+        self.recenter_blobs()
+
+    def cool(self):
+        for blob in mutationStrategy.representation:
+            blob.cool()
+
+    def render_image(self):
+        image = self.baseImage.copy()
+        px = image.load()
+        
+        for px_y in range(image.height):
+            for px_x in range(image.width):
+
+                dist = sum(blob.effect(px_x, px_y) for blob in self.representation)
+
+                if dist > 1:
+                    px[px_x, px_y] = white
+
         return image
 
-    def convert_pil_image(self, image):
-        pil_image = self.baseImage.copy()       
-        for blob in image:
-            blob.addBlobToImage(pil_image, self.pallet)
-        
-        return pil_image
 
-def anneal(comparisons, imageDir, mutationStrategy):
-    # Encode text descriptions
-    text_emb = model.encode(
-        comparisons
-    )
+# Local search methods
+class LocalSearchMethod():
+    def __init__(self, mutationStrategy, scoringSystem):
+        self.mutationStrategy = mutationStrategy
+        self.scoringSystem = scoringSystem
 
-    # Path
-    path = os.path.join("images", imageDir)
-    
-    # Create the directory 'ihritik'
-    os.makedirs(path, exist_ok=True)
+        self.score = 0
+        self.best_score = 0
 
-    iterations = 0
-    
-    blobs = mutationStrategy.mutate_image([])
-    image = mutationStrategy.convert_pil_image(blobs)
+        self.history = []
+        self.best_history = []
 
-    gif = []    
-    image.save(f"{path}/{str(iterations)}.png","PNG")
-    gif.append(image)
+    def search(self, image_path=None):
+        pass
 
-    prev_similarity_score = None
-    temp = 1000
-    best_score = None
-    bests = []
-    while temp > 0:
-        # Encode an image:
-        mutatedBlobs = mutationStrategy.mutate_image(blobs)
-        image = mutationStrategy.convert_pil_image(blobs)
-        img_emb = model.encode(image)
-        similarity_score = compareScore(0, text_emb, img_emb)
+class SimulatedAnnealing(LocalSearchMethod):
+    def search(self, image_path=None):
+        MIN_DELTA = 0.005
+        MAX_NO_CHANGE = 15
+        MIN_TEMP = 0.0000001
 
-        if prev_similarity_score == None:
-            prev_similarity_score = similarity_score
+        temp = 1
+        alpha = 0.95
 
-        score_dif = 500000 * (similarity_score - prev_similarity_score)
-        if score_dif < 0:
-            random_prob = math.exp(score_dif/temp)
-        else:
-            random_prob = 0
-        print(random_prob)
-        random_step = random_prob > random.random()
+        mutationStrategy = self.mutationStrategy
+        mutationStrategy.best_representation = copy.deepcopy(mutationStrategy.representation)
+        initial_score = self.score = self.scoringSystem.score_image(mutationStrategy.render_image())
+        self.best_score = self.score
 
-        if score_dif > 0 or random_step:
-            if random_step:
-                print(f" - random step {iterations}, {similarity_score}, {random_prob}")
+        no_change_count = 0
+        i = 0
+
+        gif = []
+        if image_path:
+            os.makedirs(image_path, exist_ok=True)        
+
+        #sum(blob.temp for blob in mutationStrategy.representation) > 0.0000001
+        while temp > MIN_TEMP:
+            self.score = self.scoringSystem.score_image(mutationStrategy.render_image())
+            
+            previousRepresentation = copy.deepcopy(mutationStrategy.representation)
+
+            mutationStrategy.mutate_image(temp)
+
+            score = self.scoringSystem.score_image(mutationStrategy.render_image())
+
+            score_dif = 100 * (score - self.score)
+
+            if score_dif < -MIN_DELTA and temp > 0:
+                # accept worse random step
+                random_prob = math.exp(score_dif/temp)
             else:
-                print(f" - new best {iterations}, {similarity_score}")    
-            prev_similarity_score = similarity_score
+                # optimum step
+                random_prob = 1
+            
+            if random.random() < random_prob or no_change_count > MAX_NO_CHANGE :
+                # Take step
+                self.score = score
+                no_change_count = 0
+            else:
+                # Revert step
+                mutationStrategy.representation = previousRepresentation
+                no_change_count = no_change_count + 1
 
-            if best_score == None:
-                best_score = similarity_score
-            if similarity_score >= best_score:
-                best_score = similarity_score
-                bests.append(image)
+            mutationStrategy.cool()
+            temp = temp * alpha
 
-            image.save(f"{path}/{str(iterations)}.png","PNG")
-            gif.append(image)
-            blobs = mutatedBlobs
-            for blob in blobs:
-                print(f" - {str(blob)}")
+            i = i + 1
 
-        iterations = iterations + 1
-        temp = temp - 1
+            image = mutationStrategy.render_image()
+            self.history.append(image)
+            
+            if self.score > self.best_score:
+                self.best_representation = copy.deepcopy(mutationStrategy.representation)
+                self.best_score = self.score
+                self.best_history.append(image)
+                print(f"{i} {self.best_score}")
+            
+            if image_path:
+                image.save(f"{image_path}/{i}.png","PNG")
+                gif.append(image)
 
-    
-    gif[0].save(f"{path}/GIF.gif", 
-                save_all = True, append_images = gif[1:], 
-                optimize = False, duration = 10) 
-    
-    bests[0].save(f"{path}/BESTS.gif", 
-            save_all = True, append_images = bests[1:], 
-            optimize = False, duration = 10) 
-    
-    compare(comparisons, text_emb, model.encode(gif[-1]))
-    compare(comparisons, text_emb, model.encode(bests[-1]))
+        mutationStrategy.representation = copy.deepcopy(mutationStrategy.best_representation)
+        end_score = self.score = self.scoringSystem.score_image(mutationStrategy.render_image())
 
+        print(f'{round(((end_score-initial_score)/initial_score) * 100, 4)}% improvement\n  - {initial_score}\n  - {end_score}')
 
-def compare(texts, text_emb, img_emb):
-    similarity_score = model.similarity(img_emb, text_emb).tolist()[0]
-    bestIndex = max(enumerate(similarity_score),key=lambda x: x[1])[0]
+        if image_path:
+            gif[0].save(f"{image_path}/GIF.gif", 
+                        save_all = True, append_images = gif[1:], 
+                        optimize = False, duration = 10) 
 
-    print(f"{texts[bestIndex]} {similarity_score[bestIndex]}")
-    return texts[bestIndex]
-
-def compareScore(expectedIndex, text_emb, img_emb):
-    similarity_score = model.similarity(img_emb, text_emb).tolist()[0]
-    bestIndexOrder = list(map(lambda e: e[0], sorted(enumerate(similarity_score),key=lambda x: x[1])))
-    if bestIndexOrder[0] == expectedIndex:
-        return similarity_score[expectedIndex] - similarity_score[bestIndexOrder[1]]
-    else:
-        return similarity_score[expectedIndex] - similarity_score[bestIndexOrder[0]]
 
 if __name__ == '__main__':
     # Compute similarities
 
     prompt = sys.argv[1]
     imageDir = sys.argv[1]
-    mutationStrategy = MoveBlobsStrategy(32, Colour())
+
+    mutationStrategy = MoveBlobsStrategy(128, 200)
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32", prompt)
     
+    localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
+
     comparisons = sys.argv[1:]
-    anneal(comparisons, imageDir, mutationStrategy)
+
+    # Path
+    path = os.path.join("images", imageDir)
+    
+    # Create the directory
+    os.makedirs(path, exist_ok=True)
+
+    MIN_BLOBS = 1
+    MAX_BLOBS = 5
+
+    for i in range(MIN_BLOBS):
+        mutationStrategy.add_blob()
+
+    for i in range(MAX_BLOBS - MIN_BLOBS):
+        mutationStrategy.add_blob()
+        #mutationStrategy.anneal(f"images/{imageDir}/{i}")        
+        localSearch.search(f"images/{imageDir}/{i}")
+
+    localSearch.history[0].save(f"images/{imageDir}/GIF.gif", 
+            save_all = True, append_images = localSearch.history[1:], 
+            optimize = False, duration = 10) 
+    
+    localSearch.best_history[0].save(f"images/{imageDir}/bestGIF.gif", 
+            save_all = True, append_images = localSearch.best_history[1:], 
+            optimize = False, duration = 10) 
