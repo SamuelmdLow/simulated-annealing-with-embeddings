@@ -33,15 +33,15 @@ class EmbeddingsScoring():
 
 # Mutation strategies
 class MutationStrategy():
-    def __init__(self, size, scoring):
+    def __init__(self, size):
         pil_image = Image.new(mode="RGB", size=(size, size))
         draw = ImageDraw.Draw(pil_image)
         draw.rectangle([(0, 0), (pil_image.width - 1, pil_image.height - 1)], black)
         self.baseImage = pil_image
         self.size = size
 
-        self.representation = []
-        self.best_representation = []
+        self.representation = None
+        self.best_representation = None
 
     def mutate_image(self, temp):
         return self.baseImage # Placeholder
@@ -49,27 +49,31 @@ class MutationStrategy():
     def render_image(self):
         return self.baseImage
 
-    def cool():
-        # for simulated annealing
-        pass
-
 class RandomPixelFlipStrategy(MutationStrategy):
+    def __init__(self, size):
+        super().__init__(size)
+        self.representation = self.baseImage
+        self.best_representation = self.baseImage
+
     def mutate_image(self, temp):
-        image = self.baseImage.copy()
-        px = self.image.load()
+        image = self.representation.copy()
+        px = image.load()
         
-        for i in range(self.size**2 * temp):
+        for i in range(max(1, int(self.size**2 * (0.01+ 0.99*temp* random.random())))):
             x = random.randint(0, image.width - 1)
             y = random.randint(0, image.height - 1)
             self.flip_pixel(px, x, y)
         
-        return image
+        self.representation = image
     
     def flip_pixel(self, px, x, y):
         if px[x,y] == black:
             px[x,y] = white
         else:
             px[x,y] = black
+
+    def render_image(self):
+        return self.representation
 
 class Colour():
     def __init__(self):
@@ -131,13 +135,11 @@ class Colour():
         print(self.pallet)
 
 class Blob():
-    def __init__(self, image_size, temp):
+    def __init__(self, image_size):
         self.x = image_size // 2
         self.y = image_size // 2
         self.radius = 1
         self.colour = None
-
-        self.temp = temp
         
         self.image_size = image_size
 
@@ -189,9 +191,6 @@ class Blob():
         self.x = hypotonuse * math.sin(newAngle)
         self.y = hypotonuse * math.cos(newAngle)
 
-    def cool(self):
-        self.temp = self.temp * 0.95
-
     def effect(self, x, y):
         dist = (x-self.x)**2 + (y-self.y)**2
         if dist == 0:
@@ -212,8 +211,16 @@ class Blob():
 
 class MoveBlobsStrategy(MutationStrategy):
 
+    def __init__(self, size, blob_count, colour):
+        super().__init__(size)
+        self.representation = []
+        self.best_representation = []
+        
+        for i in range(blob_count):
+            self.add_blob()
+
     def add_blob(self):
-        self.representation.append(Blob(self.size, 1))
+        self.representation.append(Blob(self.size))
 
     def recenter_blobs(self):
         offsetX = (sum(blob.x for blob in self.representation) / len(self.representation)) - (self.size/2)
@@ -251,10 +258,6 @@ class MoveBlobsStrategy(MutationStrategy):
 
         self.recenter_blobs()
 
-    def cool(self):
-        for blob in mutationStrategy.representation:
-            blob.cool()
-
     def render_image(self):
         image = self.baseImage.copy()
         px = image.load()
@@ -265,7 +268,7 @@ class MoveBlobsStrategy(MutationStrategy):
                 dist = sum(blob.effect(px_x, px_y) for blob in self.representation)
 
                 if dist > 1:
-                    px[px_x, px_y] = white
+                    px[px_x, px_y] = self.colour
 
         return image
 
@@ -282,34 +285,64 @@ class LocalSearchMethod():
         self.history = []
         self.best_history = []
 
+    def update_best(self, representation=None, score=None, image=None, image_path=None):
+        if score == None:
+            score = self.score
+
+        if score >= self.best_score:
+            if representation == None:
+                representation = copy.deepcopy(self.mutationStrategy.representation)
+            if image == None:
+                image = self.mutationStrategy.render_image()
+
+            self.best_representation = representation
+            self.best_score = score
+            self.best_history.append(image)
+
+            if image_path:
+                image.save(f"{image_path}/best.png","PNG")
+
+    def save_history(self, path):
+
+        self.history[0].save(f"images/{path}/GIF.gif", 
+                save_all = True, append_images = self.history[1:], 
+                optimize = False, duration = 10) 
+        
+        self.best_history[0].save(f"images/{path}/bestGIF.gif", 
+                save_all = True, append_images = self.best_history[1:], 
+                optimize = False, duration = 10)
+
     def search(self, image_path=None):
         pass
 
 class SimulatedAnnealing(LocalSearchMethod):
-    def search(self, image_path=None):
+    def __init__(self, mutationStrategy, scoringSystem):
+        super().__init__(mutationStrategy, scoringSystem)
+
+    def search(self, image_path=None, alpha=0.95, initial_temp=1):
         MIN_DELTA = 0.005
         MAX_NO_CHANGE = 15
         MIN_TEMP = 0.0000001
 
-        temp = 1
-        alpha = 0.95
+        if image_path:
+            os.makedirs(image_path, exist_ok=True)        
+
+        temp = initial_temp
 
         mutationStrategy = self.mutationStrategy
-        mutationStrategy.best_representation = copy.deepcopy(mutationStrategy.representation)
-        initial_score = self.score = self.scoringSystem.score_image(mutationStrategy.render_image())
-        self.best_score = self.score
+        image = mutationStrategy.render_image()
+        self.score = self.scoringSystem.score_image(image)
+        self.update_best(image=image, image_path=image_path)
+
+        initial_score = self.best_score
 
         no_change_count = 0
         i = 0
 
         gif = []
-        if image_path:
-            os.makedirs(image_path, exist_ok=True)        
 
         #sum(blob.temp for blob in mutationStrategy.representation) > 0.0000001
-        while temp > MIN_TEMP:
-            self.score = self.scoringSystem.score_image(mutationStrategy.render_image())
-            
+        while temp > MIN_TEMP:         
             previousRepresentation = copy.deepcopy(mutationStrategy.representation)
 
             mutationStrategy.mutate_image(temp)
@@ -334,7 +367,6 @@ class SimulatedAnnealing(LocalSearchMethod):
                 mutationStrategy.representation = previousRepresentation
                 no_change_count = no_change_count + 1
 
-            mutationStrategy.cool()
             temp = temp * alpha
 
             i = i + 1
@@ -343,24 +375,43 @@ class SimulatedAnnealing(LocalSearchMethod):
             self.history.append(image)
             
             if self.score > self.best_score:
-                self.best_representation = copy.deepcopy(mutationStrategy.representation)
-                self.best_score = self.score
-                self.best_history.append(image)
+                self.update_best(image=image, image_path=image_path)
                 print(f"{i} {self.best_score}")
             
             if image_path:
-                image.save(f"{image_path}/{i}.png","PNG")
+                #image.save(f"{image_path}/{i}.png","PNG")
                 gif.append(image)
 
         mutationStrategy.representation = copy.deepcopy(mutationStrategy.best_representation)
-        end_score = self.score = self.scoringSystem.score_image(mutationStrategy.render_image())
+        
 
-        print(f'{round(((end_score-initial_score)/initial_score) * 100, 4)}% improvement\n  - {initial_score}\n  - {end_score}')
+        print(f'{round(((self.best_score-initial_score)/initial_score) * 100, 4)}% improvement\n  - {initial_score}\n  - {self.best_score}')
 
         if image_path:
             gif[0].save(f"{image_path}/GIF.gif", 
                         save_all = True, append_images = gif[1:], 
                         optimize = False, duration = 10) 
+
+
+def alternate_blobs_pixels(scoreSystem, imageDir, iterations):
+    blobsStrategy = MoveBlobsStrategy(128, 3, white)
+    pixelsStrategy = RandomPixelFlipStrategy(128)
+    
+    localSearch = SimulatedAnnealing(copy.deepcopy(pixelsStrategy), scoreSystem)
+
+    for i in range(iterations):
+        localSearch.search(f"images/{imageDir}/{i}/pixels", initial_temp=1/(i+1))
+
+        blobsStrategy.colour = [white,black][i%2]
+        blobsStrategy.baseImage = localSearch.best_history[-1]
+        localSearch.mutationStrategy = copy.deepcopy(blobsStrategy)
+
+        localSearch.search(f"images/{imageDir}/{i}/influence")
+
+        pixelsStrategy.representation = localSearch.best_history[-1]
+        localSearch.mutationStrategy = copy.deepcopy(pixelsStrategy)
+
+        localSearch.save_history(f"{imageDir}/")
 
 
 if __name__ == '__main__':
@@ -369,34 +420,11 @@ if __name__ == '__main__':
     prompt = sys.argv[1]
     imageDir = sys.argv[1]
 
-    mutationStrategy = MoveBlobsStrategy(128, 200)
-    scoreSystem = EmbeddingsScoring("clip-ViT-B-32", prompt)
-    
-    localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
-
-    comparisons = sys.argv[1:]
-
     # Path
     path = os.path.join("images", imageDir)
     
     # Create the directory
     os.makedirs(path, exist_ok=True)
 
-    MIN_BLOBS = 1
-    MAX_BLOBS = 5
-
-    for i in range(MIN_BLOBS):
-        mutationStrategy.add_blob()
-
-    for i in range(MAX_BLOBS - MIN_BLOBS):
-        mutationStrategy.add_blob()
-        #mutationStrategy.anneal(f"images/{imageDir}/{i}")        
-        localSearch.search(f"images/{imageDir}/{i}")
-
-    localSearch.history[0].save(f"images/{imageDir}/GIF.gif", 
-            save_all = True, append_images = localSearch.history[1:], 
-            optimize = False, duration = 10) 
-    
-    localSearch.best_history[0].save(f"images/{imageDir}/bestGIF.gif", 
-            save_all = True, append_images = localSearch.best_history[1:], 
-            optimize = False, duration = 10) 
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32", prompt)
+    alternate_blobs_pixels(scoreSystem, imageDir, 10)
