@@ -31,6 +31,12 @@ class EmbeddingsScoring():
 
         return similarity_score[0]
 
+    def score_multiple(self, images):
+        images = self.model.encode(images)
+        similarity_score = self.model.similarity(images, self.text_emb).tolist()
+
+        return similarity_score
+
 # Mutation strategies
 class MutationStrategy():
     def __init__(self, size):
@@ -414,9 +420,10 @@ def alternate_blobs_pixels(scoreSystem, imageDir, iterations):
         localSearch.save_history(f"{imageDir}/")
 
 
+
+
 if __name__ == '__main__':
     # Compute similarities
-
     prompt = sys.argv[1]
     imageDir = sys.argv[1]
 
