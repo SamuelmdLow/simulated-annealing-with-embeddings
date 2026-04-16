@@ -6,6 +6,12 @@ import random
 import os
 import math
 import copy
+import statistics
+import asyncio
+import multiprocessing
+import time
+import numpy as np
+import matplotlib.pyplot as plt
 
 # Colours
 white = (255, 255, 255)
@@ -17,25 +23,66 @@ class ScoringSystem():
         return 0
 
 class EmbeddingsScoring():
-    def __init__(self, model, text): 
+    def __init__(self, model): 
         # Load CLIP model
         self.model = SentenceTransformer(model)
+        self.goal = None
         
+    def set_goal_text(self, text):
         # Encode text descriptions
-        self.text_emb = self.model.encode([text])
+        self.goal = self.model.encode([text])
+
+    def set_goal_image(self, image):
+        # Encode image
+        self.goal = self.model.encode(image)
 
     def score_image(self, image):
+        # Compare image embedding to goal
         img_emb = self.model.encode(image)
 
-        similarity_score = self.model.similarity(img_emb, self.text_emb).tolist()[0]
+        similarity_score = self.model.similarity(img_emb, self.goal).tolist()[0]
 
         return similarity_score[0]
 
-    def score_multiple(self, images):
+    def score_images(self, images):
+        # Compare multiple images to goal
         images = self.model.encode(images)
-        similarity_score = self.model.similarity(images, self.text_emb).tolist()
+        similarity_score = self.model.similarity(images, self.goal).tolist()
 
         return similarity_score
+    
+    def compare_images_to_image(self, images, image):
+        image = self.model.encode(image)
+        images = self.model.encode(images)
+        similarity_score = self.model.similarity(image, images).tolist()
+
+        return similarity_score
+
+    def compute_sample_sim_means(self, samples, sample_size):
+        start = time.time()
+        flat_list = []
+        for sample in samples:
+            flat_list.append(sample[0])
+            flat_list.extend(sample[1])
+
+        encodings = self.model.encode(flat_list, batch_size=64, show_progress_bar=True, convert_to_numpy=True)
+        encodingTime = time.time()
+
+        means = []
+        setLen = sample_size + 1
+        for i in range(len(samples)):
+            index = i * setLen
+
+            baseEncoding = encodings[index]
+            sampleEncoding = encodings[index + 1: index+setLen]
+            means.append(np.mean(self.model.similarity(baseEncoding, sampleEncoding).tolist()[0]))
+        simTime = time.time()
+
+        print(f"encoding: {encodingTime-start}, sim: {simTime-encodingTime}")
+        
+        return means
+
+
 
 # Mutation strategies
 class MutationStrategy():
@@ -62,15 +109,16 @@ class RandomPixelFlipStrategy(MutationStrategy):
         self.best_representation = self.baseImage
 
     def mutate_image(self, temp):
-        image = self.representation.copy()
-        px = image.load()
-        
-        for i in range(max(1, int(self.size**2 * (0.01+ 0.99*temp* random.random())))):
-            x = random.randint(0, image.width - 1)
-            y = random.randint(0, image.height - 1)
-            self.flip_pixel(px, x, y)
-        
-        self.representation = image
+        if temp > 0:
+            image = self.representation.copy()
+            px = image.load()
+            
+            for i in range(max(1, int(self.size**2 * (0.01+ 0.99*temp* random.random())))):
+                x = random.randint(0, image.width - 1)
+                y = random.randint(0, image.height - 1)
+                self.flip_pixel(px, x, y)
+            
+            self.representation = image
     
     def flip_pixel(self, px, x, y):
         if px[x,y] == black:
@@ -146,6 +194,7 @@ class Blob():
         self.y = image_size // 2
         self.radius = 1
         self.colour = None
+        self.tempAdjust = 1
         
         self.image_size = image_size
 
@@ -155,7 +204,8 @@ class Blob():
         return f"[{self.x}, {self.y}], radius: {self.radius}"
 
     def random_mutate(self, temp):
-        step_size = max(1, int((self.image_size/2) * (0.3 + 0.7 * temp)))
+        temp = temp * self.tempAdjust
+        step_size = max(1, int((self.image_size/2) * temp))
 
         if self.x <= 0:
             self.x = self.x + random.randint(0, step_size)
@@ -217,10 +267,12 @@ class Blob():
 
 class MoveBlobsStrategy(MutationStrategy):
 
-    def __init__(self, size, blob_count, colour):
+    def __init__(self, size, blob_count, colour, recenter=False):
         super().__init__(size)
         self.representation = []
         self.best_representation = []
+        self.colour = colour
+        self.recenter = recenter
         
         for i in range(blob_count):
             self.add_blob()
@@ -229,12 +281,31 @@ class MoveBlobsStrategy(MutationStrategy):
         self.representation.append(Blob(self.size))
 
     def recenter_blobs(self):
-        offsetX = (sum(blob.x for blob in self.representation) / len(self.representation)) - (self.size/2)
-        offsetY = (sum(blob.y for blob in self.representation) / len(self.representation)) - (self.size/2)
+        minX = min([blob.x - blob.radius for blob in self.representation])
+        maxX = max([blob.x + blob.radius for blob in self.representation])
+        minY = min([blob.y - blob.radius for blob in self.representation])
+        maxY = max([blob.y + blob.radius for blob in self.representation])
+
+        #offsetX = (sum(blob.x for blob in self.representation) / len(self.representation)) - (self.size/2)
+        #offsetY = (sum(blob.y for blob in self.representation) / len(self.representation)) - (self.size/2)
+
+        width = maxX-minX
+        height = maxY-minY
+        offsetX = minX + width/2 - (self.size/2)
+        offsetY = minY + height/2 - (self.size/2)
 
         for blob in self.representation:
             blob.x -= offsetX
             blob.y -= offsetY
+
+        length = max(width, height)
+        if length > self.size:
+            scale = self.size/length
+
+            for blob in self.representation:
+                blob.x = self.size/2 + (blob.x - self.size/2) * scale
+                blob.y = self.size/2 + (blob.y - self.size/2) * scale
+                blob.radius = blob.radius * scale
 
     def rotate_blobs(self, rotation):
         for blob in self.representation:
@@ -249,22 +320,25 @@ class MoveBlobsStrategy(MutationStrategy):
             blob.y = -1 * blob.y
 
     def mutate_image(self, temp):
-        for blob in self.representation:
-            blob.random_mutate(temp)
+        if temp > 0:
+            for blob in self.representation:
+                blob.random_mutate(temp)
 
-        if random.random() < temp:
-            choice = random.random()
-            if choice < 0.5:
-                rotation = 2*math.pi*(random.random()-0.5)
-                self.rotate_blobs(rotation)
-            elif choice < 0.75:
-                self.flip_blobs_x()
-            else:
-                self.flip_blobs_y()
+            if random.random() < temp:
+                choice = random.random()
+                if choice < 0.5:
+                    rotation = 2*math.pi*(random.random()-0.5)
+                    self.rotate_blobs(rotation)
+                elif choice < 0.75:
+                    self.flip_blobs_x()
+                else:
+                    self.flip_blobs_y()
 
-        self.recenter_blobs()
+            if self.recenter:
+                self.recenter_blobs()
 
     def render_image(self):
+        '''
         image = self.baseImage.copy()
         px = image.load()
         
@@ -277,6 +351,28 @@ class MoveBlobsStrategy(MutationStrategy):
                     px[px_x, px_y] = self.colour
 
         return image
+        '''
+
+        base = np.asarray(self.baseImage)
+
+        xs = np.arange(self.size)
+        ys = np.arange(self.size)
+
+        X = xs[:, None]
+        Y = ys[None, :]
+
+        effects = np.zeros((self.size, self.size))
+        for blob in self.representation:
+            dists = (X-blob.x) ** 2 + (Y-blob.y) ** 2
+            dists = np.maximum(dists, 1e-4)
+        
+            effects += blob.radius**2 / dists
+        
+        cells = np.where(effects[..., None] > 1, self.colour, base).astype(np.uint8)
+
+        img = Image.fromarray(cells)
+
+        return img
 
 
 # Local search methods
@@ -290,6 +386,7 @@ class LocalSearchMethod():
 
         self.history = []
         self.best_history = []
+        self.best_representation = None
 
     def update_best(self, representation=None, score=None, image=None, image_path=None):
         if score == None:
@@ -388,7 +485,7 @@ class SimulatedAnnealing(LocalSearchMethod):
                 #image.save(f"{image_path}/{i}.png","PNG")
                 gif.append(image)
 
-        mutationStrategy.representation = copy.deepcopy(mutationStrategy.best_representation)
+        mutationStrategy.representation = copy.deepcopy(self.best_representation)
         
 
         print(f'{round(((self.best_score-initial_score)/initial_score) * 100, 4)}% improvement\n  - {initial_score}\n  - {self.best_score}')
@@ -397,6 +494,41 @@ class SimulatedAnnealing(LocalSearchMethod):
             gif[0].save(f"{image_path}/GIF.gif", 
                         save_all = True, append_images = gif[1:], 
                         optimize = False, duration = 10) 
+
+def generate_mutation(baseMutationStrategy, temp):
+    #start = time.time()
+    ms = copy.deepcopy(baseMutationStrategy)
+    #copyTime = time.time()
+    ms.mutate_image(temp)
+    #mutateTime = time.time()
+    image = ms.render_image() 
+    #imageTime = time.time()
+    #print(f"copy: {copyTime - start}, mutate: {mutateTime - copyTime}, image: {imageTime - mutateTime}")
+    return image
+
+def generate_sample(mutationStrategy, sample_size):
+    start = time.time()
+    baseMutationStrategy = copy.deepcopy(mutationStrategy)
+    baseMutationStrategy.mutate_image(1)
+    baseImage = baseMutationStrategy.render_image()
+    
+    
+    images = [generate_mutation(baseMutationStrategy, temp) for s in range(sample_size)]
+
+    return [baseImage, images]
+
+def sample_distances(mutationStrategy, scoreSystem, samples=1000, sample_size = 100, temp=0.01):
+    start = time.time()
+
+    samples = [generate_sample(mutationStrategy, sample_size) for sample in range(samples)]
+    sampleTime = time.time()
+
+    means = scoreSystem.compute_sample_sim_means(samples, sample_size)
+    distTime = time.time()
+
+    print(f"sample: {sampleTime-start}s, dis: {distTime-sampleTime}s")
+
+    return means
 
 
 def alternate_blobs_pixels(scoreSystem, imageDir, iterations):
@@ -420,18 +552,88 @@ def alternate_blobs_pixels(scoreSystem, imageDir, iterations):
         localSearch.save_history(f"{imageDir}/")
 
 
-
-
 if __name__ == '__main__':
-    # Compute similarities
-    prompt = sys.argv[1]
-    imageDir = sys.argv[1]
+    command = sys.argv[1]
 
-    # Path
-    path = os.path.join("images", imageDir)
-    
-    # Create the directory
-    os.makedirs(path, exist_ok=True)
+    if command == "anneal":
+        # Compute similarities
 
-    scoreSystem = EmbeddingsScoring("clip-ViT-B-32", prompt)
-    alternate_blobs_pixels(scoreSystem, imageDir, 10)
+        options = ["alternate", "increasing-blob", "blob", "pixel"]
+
+        if sys.argv[2] in options:
+            prompt = sys.argv[3]
+            imageDir = prompt
+
+            # Path
+            path = os.path.join("images", imageDir)
+            
+            # Create the directory
+            os.makedirs(path, exist_ok=True)
+            
+            scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+            scoreSystem.set_goal_text(prompt)
+
+            if sys.argv[2] == "alternate":
+                alternate_blobs_pixels(scoreSystem, imageDir, 10)
+            elif sys.argv[2] == "increasing-blob":
+                iterations = int(sys.argv[4])
+                groupSize = int(sys.argv[5])
+                mutationStrategy = MoveBlobsStrategy(128, groupSize, white, recenter=True)                
+                localSearch = SimulatedAnnealing(copy.deepcopy(mutationStrategy), scoreSystem)
+
+                for i in range(iterations):
+                    localSearch.search(alpha=1 - 0.1/(i+1), initial_temp=1 - (1/(i+1)**2))
+                    localSearch.save_history(f"{imageDir}/")
+                    
+                    for blob in localSearch.mutationStrategy.representation:
+                        blob.tempAdjust = blob.tempAdjust * 0.75
+
+                    for g in range(groupSize):
+                        localSearch.mutationStrategy.add_blob()
+                    
+            else:
+                if sys.argv[2] == "blob":
+                    blobCount = 3
+                    if len(sys.argv) > 4:
+                        blobCount = int(sys.argv[4])
+                    mutationStrategy = MoveBlobsStrategy(128, blobCount, white, recenter=True)
+                elif sys.argv[2] == "pixel":
+                    mutationStrategy = RandomPixelFlipStrategy(128)
+                    
+                localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
+                localSearch.search(alpha=0.99)
+
+                localSearch.save_history(f"{imageDir}/")
+        else:
+            print("anneal options are: 'alternate', 'blob', 'pixel'")
+
+    elif command == "measure_steps":
+        scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+        
+        mutationStrategy = RandomPixelFlipStrategy(128)
+        
+        if sys.argv[2] == "blob":
+            mutationStrategy = MoveBlobsStrategy(128, 3, white)
+
+        means = []
+        temp = 1
+
+        xpoints = np.arange(21) * 0.05
+        for temp in xpoints:
+            
+            sample = sample_distances(mutationStrategy, scoreSystem, samples=64, sample_size=1, temp=temp)
+            means.append(statistics.mean(sample))
+            print(f"{temp}) mean: {statistics.mean(sample)}, stdev: {statistics.stdev(sample)}")
+
+        plt.plot(xpoints, means)
+        plt.title(f"{sys.argv[2]} mutation strategy")
+        plt.xlabel("Temperature")
+        plt.ylabel("CLIP similarity")
+        
+        plt.savefig(f"{sys.argv[2]}_plot.png")
+        plt.show()
+
+        print(means)
+
+    else:
+        print("Options:\n   * anneal {alternate/increasing-blob/blob/pixel} {prompt}\n   * measure_steps {pixel/blob}")
