@@ -88,12 +88,13 @@ class EmbeddingsScoring():
 
 # Mutation strategies
 class MutationStrategy():
-    def __init__(self, size):
-        pil_image = Image.new(mode="RGB", size=(size, size))
+    def __init__(self, sizeX, sizeY):
+        pil_image = Image.new(mode="RGB", size=(sizeX, sizeY))
         draw = ImageDraw.Draw(pil_image)
         draw.rectangle([(0, 0), (pil_image.width - 1, pil_image.height - 1)], black)
         self.baseImage = pil_image
-        self.size = size
+        self.sizeX = sizeX
+        self.sizeY = sizeY
 
         self.representation = None
         self.best_representation = None
@@ -105,8 +106,8 @@ class MutationStrategy():
         return self.baseImage
 
 class RandomPixelFlipStrategy(MutationStrategy):
-    def __init__(self, size):
-        super().__init__(size)
+    def __init__(self, sizeX, sizeY):
+        super().__init__(sizeX, sizeY)
         self.representation = self.baseImage
         self.best_representation = self.baseImage
 
@@ -115,7 +116,7 @@ class RandomPixelFlipStrategy(MutationStrategy):
             image = self.representation.copy()
             px = image.load()
             
-            for i in range(max(1, int(self.size**2 * (0.01+ 0.99*temp* random.random())))):
+            for i in range(max(1, int(self.sizeX*self.sizeY * (0.01+ 0.99*temp* random.random())))):
                 x = random.randint(0, image.width - 1)
                 y = random.randint(0, image.height - 1)
                 self.flip_pixel(px, x, y)
@@ -132,8 +133,8 @@ class RandomPixelFlipStrategy(MutationStrategy):
         return self.representation
 
 class ColourStripesStrategy(MutationStrategy):
-    def __init__(self, size, stripe_count):
-        super().__init__(size)
+    def __init__(self, sizeX, sizeY, stripe_count):
+        super().__init__(sizeX, sizeY)
         self.stripe_count = stripe_count
         self.representation = []
         for i in range(stripe_count):
@@ -147,11 +148,11 @@ class ColourStripesStrategy(MutationStrategy):
                     colour[i] = min(max(0,colour[i] + step), 255)
 
     def render_image(self):
-        stripeWidth = self.size//len(self.representation)
+        stripeWidth = self.sizeX//len(self.representation)
 
         stripes = []
         for colour in self.representation:
-            stripe = np.broadcast_to(np.array(colour), (self.size, stripeWidth, 3))
+            stripe = np.broadcast_to(np.array(colour), (self.sizeY, stripeWidth, 3))
             stripes.append(stripe)
         img = np.concatenate(stripes, axis=1).astype(np.uint8)
         img = Image.fromarray(img)
@@ -218,46 +219,49 @@ class Colour():
         print(self.pallet)
 
 class Blob():
-    def __init__(self, image_size):
-        self.x = image_size // 2
-        self.y = image_size // 2
+    def __init__(self, image_sizeX, image_sizeY):
+        self.x = image_sizeX // 2
+        self.y = image_sizeY // 2
         self.radius = 1
         self.colour = None
         self.tempAdjust = 1
         
-        self.image_size = image_size
+        self.image_sizeX = image_sizeX
+        self.image_sizeY = image_sizeY
 
     def __str__(self):
         return f"[{self.x}, {self.y}], radius: {self.radius}"
 
-    def random_mutate(self, temp):
+    def random_mutate(self, temp, blobCount):
         temp = temp * self.tempAdjust
-        step_size = max(1, int((self.image_size/2) * temp))
 
+        step_sizeX = max(1, int((self.image_sizeX/2) * temp)) 
         if self.x <= 0:
-            self.x = self.x + random.randint(0, step_size)
-        elif self.x >= self.image_size -1:
-            self.x = self.x + random.randint(-step_size, 0)
+            self.x = self.x + random.randint(0, step_sizeX)
+        elif self.x >= self.image_sizeX -1:
+            self.x = self.x + random.randint(-step_sizeX, 0)
         else:
-            self.x = self.x + random.randint(-step_size, step_size)
+            self.x = self.x + random.randint(-step_sizeX, step_sizeX)
 
+        step_sizeY = max(1, int((self.image_sizeY/2) * temp))
         if self.y <= 0:
-            self.y = self.y + random.randint(0, step_size)
-        elif self.y >= self.image_size -1:
-            self.y = self.y + random.randint(-step_size, 0)
+            self.y = self.y + random.randint(0, step_sizeY)
+        elif self.y >= self.image_sizeY -1:
+            self.y = self.y + random.randint(-step_sizeY, 0)
         else:
-            self.y = self.y + random.randint(-step_size, step_size)
+            self.y = self.y + random.randint(-step_sizeY, step_sizeY)
 
+        step_size = max(1, int((np.sqrt(self.image_sizeX**2 +  self.image_sizeY**2)/blobCount) * temp))
         if self.radius <= 1:
             self.radius = self.radius + random.randint(0, step_size)
-        elif self.radius > self.image_size // 4:
+        elif self.radius > max(self.image_sizeX, self.image_sizeY) // 4:
             self.radius = self.radius + random.randint(-step_size, 0)
         else:
             self.radius = self.radius + random.randint(-step_size, step_size)
 
     def rotate(self, rotation):
-        opposite = self.x - (self.image_size/2)
-        adjacent = self.y - (self.image_size/2)
+        opposite = self.x - (self.image_sizeX/2)
+        adjacent = self.y - (self.image_sizeY/2)
         
         hypotonuse = math.sqrt(opposite**2 + adjacent**2)
 
@@ -294,8 +298,8 @@ class Blob():
 
 class MoveBlobsStrategy(MutationStrategy):
 
-    def __init__(self, size, blob_count, colour, recenter=False):
-        super().__init__(size)
+    def __init__(self, sizeX, sizeY, blob_count, colour, recenter=False):
+        super().__init__(sizeX, sizeY)
         self.representation = []
         self.best_representation = []
         self.colour = colour
@@ -305,7 +309,7 @@ class MoveBlobsStrategy(MutationStrategy):
             self.add_blob()
 
     def add_blob(self):
-        self.representation.append(Blob(self.size))
+        self.representation.append(Blob(self.sizeX, self.sizeY))
 
     def recenter_blobs(self):
         minX = min([blob.x - blob.radius for blob in self.representation])
@@ -313,25 +317,23 @@ class MoveBlobsStrategy(MutationStrategy):
         minY = min([blob.y - blob.radius for blob in self.representation])
         maxY = max([blob.y + blob.radius for blob in self.representation])
 
-        #offsetX = (sum(blob.x for blob in self.representation) / len(self.representation)) - (self.size/2)
-        #offsetY = (sum(blob.y for blob in self.representation) / len(self.representation)) - (self.size/2)
-
         width = maxX-minX
         height = maxY-minY
-        offsetX = minX + width/2 - (self.size/2)
-        offsetY = minY + height/2 - (self.size/2)
+        offsetX = minX + width/2 - (self.sizeX/2)
+        offsetY = minY + height/2 - (self.sizeY/2)
 
         for blob in self.representation:
             blob.x -= offsetX
             blob.y -= offsetY
 
         length = max(width, height)
-        if length > self.size:
-            scale = self.size/length
+        
+        if width > self.sizeX or height > self.sizeY:
+            scale = min(self.sizeX/width, self.sizeY/height)
 
             for blob in self.representation:
-                blob.x = self.size/2 + (blob.x - self.size/2) * scale
-                blob.y = self.size/2 + (blob.y - self.size/2) * scale
+                blob.x = self.sizeX/2 + (blob.x - self.sizeX/2) * scale
+                blob.y = self.sizeY/2 + (blob.y - self.sizeY/2) * scale
                 blob.radius = blob.radius * scale
 
     def rotate_blobs(self, rotation):
@@ -349,7 +351,7 @@ class MoveBlobsStrategy(MutationStrategy):
     def mutate_image(self, temp):
         if temp > 0:
             for blob in self.representation:
-                blob.random_mutate(temp)
+                blob.random_mutate(temp, len(self.representation))
 
             if random.random() < temp:
                 choice = random.random()
@@ -368,13 +370,13 @@ class MoveBlobsStrategy(MutationStrategy):
         if representation == None:
             representation = self.representation
 
-        xs = np.arange(self.size)
-        ys = np.arange(self.size)
+        xs = np.arange(self.sizeX)
+        ys = np.arange(self.sizeY)
 
         X = xs[:, None]
         Y = ys[None, :]
 
-        effects = np.zeros((self.size, self.size))
+        effects = np.zeros((self.sizeX, self.sizeY))
         for blob in representation:
             dists = (X-blob.x) ** 2 + (Y-blob.y) ** 2
             dists = np.maximum(dists, 1e-4)
@@ -383,6 +385,25 @@ class MoveBlobsStrategy(MutationStrategy):
 
         mask = np.where(effects > 1, 1, 0)
         return mask
+
+    def image_array(self):
+        base = np.asarray(self.baseImage)
+
+        xs = np.arange(self.sizeX)
+        ys = np.arange(self.sizeY)
+
+        X = xs[:, None]
+        Y = ys[None, :]
+
+        effects = np.zeros((self.sizeX, self.sizeY))
+        for blob in self.representation:
+            dists = (X-blob.x) ** 2 + (Y-blob.y) ** 2
+            dists = np.maximum(dists, 1e-4)
+        
+            effects += blob.radius**2 / dists
+        
+        cells = np.where(effects[..., None] > 1, 1, 0)
+        return cells
 
     def render_image(self):
         '''
@@ -402,28 +423,31 @@ class MoveBlobsStrategy(MutationStrategy):
 
         base = np.asarray(self.baseImage)
 
-        xs = np.arange(self.size)
-        ys = np.arange(self.size)
+        xs = np.arange(self.sizeX)
+        ys = np.arange(self.sizeY)
 
         X = xs[:, None]
         Y = ys[None, :]
 
-        effects = np.zeros((self.size, self.size))
+        effects = np.zeros((self.sizeX, self.sizeY))
         for blob in self.representation:
             dists = (X-blob.x) ** 2 + (Y-blob.y) ** 2
             dists = np.maximum(dists, 1e-4)
         
             effects += blob.radius**2 / dists
         
-        cells = np.where(effects[..., None] > 1, self.colour, base).astype(np.uint8)
+        try:
+            cells = np.where(effects[..., None] > 1, self.colour, base).astype(np.uint8)
+        except:
+            print(f"{self.sizeX} {self.sizeY} {base.shape} {effects.shape}")
 
         img = Image.fromarray(cells)
 
         return img
 
 class ColourPoint(Blob):
-    def __init__(self, image_size, colour=None, colour_fixed=False):
-        super().__init__(image_size)
+    def __init__(self, image_sizeX, image_sizeY, colour=None, colour_fixed=False):
+        super().__init__(image_sizeX, image_sizeY)
         self.colour_fixed = colour_fixed
         if colour:
             self.colour = colour
@@ -431,7 +455,7 @@ class ColourPoint(Blob):
             self.colour = [255 * random.random() for i in range(3)]
 
     def random_mutate(self, temp):
-        super().random_mutate(temp)
+        super().random_mutate(temp, len(self.representation))
 
         if self.colour_fixed:
             for i in range(len(self.colour)):
@@ -439,22 +463,22 @@ class ColourPoint(Blob):
                 self.colour[i] = min(max(0,self.colour[i] + step), 255)
 
 class ColourBlobs(MoveBlobsStrategy):
-    def __init__(self, size, blobCount=5, pallet=None):
-        super().__init__(size, 0, black, recenter=False)
+    def __init__(self, sizeX, sizeY, blobCount=5, pallet=None):
+        super().__init__(sizeX, sizeY, 0, black, recenter=False)
         
         self.representation = []
         self.best_representation = []
 
         if pallet:
             for colour in pallet:
-                self.representation.append(ColourPoint(self.size, colour=colour, colour_fixed=True))
+                self.representation.append(ColourPoint(self.sizeX, self.sizeY, colour=colour, colour_fixed=True))
         elif blobCount:
             for i in range(blobCount):
-                self.representation.append(ColourPoint(self.size))
+                self.representation.append(ColourPoint(self.sizeX, self.sizeY))
 
     def image_array(self):
-        xs = np.arange(self.size)
-        ys = np.arange(self.size)
+        xs = np.arange(self.sizeX)
+        ys = np.arange(self.sizeY)
 
         X = xs[:, None]
         Y = ys[None, :]
@@ -469,7 +493,7 @@ class ColourBlobs(MoveBlobsStrategy):
 
         indexes = np.argmax(np.array(effects), axis=0)
 
-        image_array = np.zeros((self.size, self.size, 3))
+        image_array = np.zeros((self.sizeX, self.sizeY, 3))
         for i in range(len(self.representation)):
             image_array = image_array + np.where(indexes[..., None]==i, self.representation[i].colour, [0,0,0])
 
@@ -483,15 +507,15 @@ class ColourBlobs(MoveBlobsStrategy):
 
 
 class ColourInsideMask(ColourBlobs):
-    def __init__(self, size, mask, pallet):
-        super().__init__(size, 0, black, recenter=False)
+    def __init__(self, sizeX, sizeY, mask, pallet):
+        super().__init__(sizeX, sizeY, 0, black, recenter=False)
         self.mask = mask
         
         self.representation = []
         self.best_representation = []
 
         for colour in pallet:
-            self.representation.append(ColourPoint(self.size, colour=colour))
+            self.representation.append(ColourPoint(self.sizeX, self.sizeY, colour=colour))
 
     def render_image(self):
         colours = super().image_array()
@@ -544,6 +568,8 @@ class LocalSearchMethod():
                 save_all = True, append_images = self.best_history[1:], 
                 optimize = False, duration = 10)
 
+        self.best_history[-1].save(f"images/{path}/{name}_best.png", "PNG")
+
     def search(self, image_path=None):
         pass
 
@@ -551,7 +577,7 @@ class SimulatedAnnealing(LocalSearchMethod):
     def __init__(self, mutationStrategy, scoringSystem):
         super().__init__(mutationStrategy, scoringSystem)
 
-    def search(self, image_path=None, alpha=0.95, initial_temp=1, min_temp=0.0000001, max_iterations=None):
+    def search(self, image_path=None, alpha=0.95, initial_temp=1, min_temp=0.0000001, max_iterations=None, satisfying_score=1):
         MIN_DELTA = 0.005
         MAX_NO_CHANGE = 15
 
@@ -572,7 +598,7 @@ class SimulatedAnnealing(LocalSearchMethod):
 
         gif = []
 
-        while temp > min_temp:         
+        while temp > min_temp and self.best_score < satisfying_score:         
             previousRepresentation = copy.deepcopy(mutationStrategy.representation)
 
             mutationStrategy.mutate_image(temp)
@@ -636,7 +662,7 @@ def generate_mutation(baseMutationStrategy, temp):
     #print(f"copy: {copyTime - start}, mutate: {mutateTime - copyTime}, image: {imageTime - mutateTime}")
     return image
 
-def generate_sample(mutationStrategy, sample_size):
+def generate_sample(mutationStrategy, sample_size, temp):
     start = time.time()
     baseMutationStrategy = copy.deepcopy(mutationStrategy)
     baseMutationStrategy.mutate_image(1)
@@ -650,7 +676,7 @@ def generate_sample(mutationStrategy, sample_size):
 def sample_distances(mutationStrategy, scoreSystem, samples=1000, sample_size = 100, temp=0.01):
     start = time.time()
 
-    samples = [generate_sample(mutationStrategy, sample_size) for sample in range(samples)]
+    samples = [generate_sample(mutationStrategy, sample_size, temp) for sample in range(samples)]
     sampleTime = time.time()
 
     means = scoreSystem.compute_sample_sim_means(samples, sample_size)
@@ -662,8 +688,8 @@ def sample_distances(mutationStrategy, scoreSystem, samples=1000, sample_size = 
 
 
 def alternate_blobs_pixels(scoreSystem, imageDir, iterations):
-    blobsStrategy = MoveBlobsStrategy(128, 3, white)
-    pixelsStrategy = RandomPixelFlipStrategy(128)
+    blobsStrategy = MoveBlobsStrategy(128, 128, 3, white)
+    pixelsStrategy = RandomPixelFlipStrategy(128, 128)
     
     localSearch = SimulatedAnnealing(copy.deepcopy(pixelsStrategy), scoreSystem)
 
@@ -681,6 +707,99 @@ def alternate_blobs_pixels(scoreSystem, imageDir, iterations):
 
         localSearch.save_history("alt-blobs-pixels", f"{imageDir}/")
 
+def random_nouns(size):
+    noun_file = open("data/english-nouns.txt", "r")
+    nouns = noun_file.read().split("\n")
+    chosen_nouns = [nouns[int(len(nouns) * random.random())] for i in range(size)]
+    print(chosen_nouns)
+    return chosen_nouns
+
+def mds(strategies, name, sample_size=32):
+    # https://www.geeksforgeeks.org/machine-learning/sklearn-multi-dimensional-scaling-mds-python-implementation-from-scratch/
+
+    # Load a sample dataset (e.g., the digits dataset)
+    #data = load_digits()
+    #X, y = data.data, data.target
+
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+
+    embeddings = []
+
+    # texts
+    chosen_nouns = random_nouns(sample_size)
+
+    images = []
+    for strategy in strategies:
+        for i in range(sample_size):
+            strategy.mutate_image(1)
+            images.append(strategy.render_image())
+
+    legend = []
+    for i in range(1+ len(strategies)):
+        legend += [i] * sample_size
+    print(legend)
+    distanceMatrix = scoreSystem.distanceMatrix(chosen_nouns+images)
+
+    mds = MDS(n_components=2)
+    X_reduced = mds.fit_transform(distanceMatrix)
+
+    # Visualize the reduced data
+    plt.figure(figsize=(8, 6))
+    plt.scatter(X_reduced[:, 0], X_reduced[:, 1], c=legend, cmap=plt.cm.get_cmap("jet", max(legend) + 1))
+    plt.colorbar(label='Encoding source', ticks=range(10))
+    plt.title("MDS Visualization of Random Images from Each Representations")
+    plt.xlabel("MDS Dimension 1")
+    plt.ylabel("MDS Dimension 2")
+
+    plt.savefig(f"plots/mds--{name}.png")
+    plt.show()
+
+def plot_avg_similarity_over_parameter(name, mutationStrategiesMap, parameters):
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+    
+    means = []
+
+    for p in parameters:
+        mutationStrategy = mutationStrategiesMap(p)
+        sample = sample_distances(mutationStrategy, scoreSystem, samples=128, sample_size=1, temp=1)
+        means.append(statistics.mean(sample))
+        print(f"{p}) mean: {statistics.mean(sample)}, stdev: {statistics.stdev(sample)}")
+
+    plt.plot(parameters, means)
+    plt.title(f"Average similarity over {name}")
+    plt.xlabel(f"{name}")
+    plt.ylabel("CLIP similarity")
+    plt.grid(axis = 'x')
+
+    plt.savefig(f"plots/{name.replace(' ', '_')}--avg_sim.png")
+    plt.show()
+
+    print(means)
+
+def plot_annealing_over_parameter(name, mutationStrategiesMap, parameters, iterations=500):
+
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+
+    nouns = random_nouns(4)
+
+    avg_scores = []
+    for p in parameters:
+        scores = []
+        for noun in nouns:
+            scoreSystem.set_goal_text(noun)
+            mutationStrategy = mutationStrategiesMap(p)
+            localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
+            localSearch.search(alpha=0.99, max_iterations=iterations)
+            scores.append(localSearch.best_score)
+        avg_scores.append(np.mean(scores))
+
+    plt.plot(parameters, avg_scores)
+    plt.title(f"Average similarity after {iterations} iterations over {name}")
+    plt.xlabel(f"{name}")
+    plt.ylabel("CLIP similarity")
+    plt.grid(axis = 'x')
+
+    plt.savefig(f"plots/{name.replace(' ', '_')}--annealing.png")
 
 if __name__ == '__main__':
     command = sys.argv[1]
@@ -709,7 +828,7 @@ if __name__ == '__main__':
             elif sys.argv[2] == "increasing-blob":
                 iterations = int(sys.argv[4])
                 groupSize = int(sys.argv[5])
-                mutationStrategy = MoveBlobsStrategy(128, groupSize, white, recenter=True)                
+                mutationStrategy = MoveBlobsStrategy(128, 128, groupSize, white, recenter=True)                
                 localSearch = SimulatedAnnealing(copy.deepcopy(mutationStrategy), scoreSystem)
 
                 for i in range(iterations):
@@ -726,12 +845,12 @@ if __name__ == '__main__':
                 blobCount = 3
                 if len(sys.argv) > 4:
                     blobCount = int(sys.argv[4])
-                blobsStrategy = MoveBlobsStrategy(128, blobCount, white, recenter=True)
+                blobsStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
 
                 stripeCount = 5
                 if len(sys.argv) > 5:
                     stripeCount = int(sys.argv[5])
-                stripesStrategy = ColourStripesStrategy(128, stripeCount)
+                stripesStrategy = ColourStripesStrategy(128, 128, stripeCount)
 
                 localSearch = SimulatedAnnealing(blobsStrategy, scoreSystem)
                 localSearch.search(alpha=0.99)
@@ -743,7 +862,7 @@ if __name__ == '__main__':
                 localSearch.save_history("coloured-blob--colour", f"{imageDir}/")
                 pallet = copy.deepcopy(localSearch.best_representation)
                 
-                colouringStrategy = ColourInsideMask(128, mask, pallet)
+                colouringStrategy = ColourInsideMask(128, 128, mask, pallet)
                 localSearch = SimulatedAnnealing(colouringStrategy, scoreSystem)
                 localSearch.search(alpha=0.99)
                 localSearch.save_history("coloured-blob", f"{imageDir}/")
@@ -753,15 +872,15 @@ if __name__ == '__main__':
                     blobCount = 3
                     if len(sys.argv) > 4:
                         blobCount = int(sys.argv[4])
-                    mutationStrategy = MoveBlobsStrategy(128, blobCount, white, recenter=True)
+                    mutationStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
                 elif sys.argv[2] == "pixel":
-                    mutationStrategy = RandomPixelFlipStrategy(128)
+                    mutationStrategy = RandomPixelFlipStrategy(128, 128)
                 elif sys.argv[2] == "stripes":
                     stripeCount = 3
                     if len(sys.argv) > 4:
                         stripeCount = int(sys.argv[4])
 
-                    mutationStrategy = ColourStripesStrategy(128, stripeCount)
+                    mutationStrategy = ColourStripesStrategy(128, 128, stripeCount)
 
                 localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
                 localSearch.search(alpha=0.99)
@@ -773,12 +892,12 @@ if __name__ == '__main__':
     elif command == "measure_steps":
         scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
         
-        mutationStrategy = RandomPixelFlipStrategy(128)
+        mutationStrategy = RandomPixelFlipStrategy(128, 128)
         
         if sys.argv[2] == "blob":
-            mutationStrategy = MoveBlobsStrategy(128, 3, white)
+            mutationStrategy = MoveBlobsStrategy(128, 128, 3, white)
         elif sys.argv[2] == "stripes":
-            mutationStrategy = ColourStripesStrategy(128, 5)
+            mutationStrategy = ColourStripesStrategy(128, 128, 5)
 
         means = []
         temp = 1
@@ -800,57 +919,52 @@ if __name__ == '__main__':
 
         print(means)
 
+    elif command == "stripe_avg_over_p":
+        mutationStrategiesMap = lambda p: ColourStripesStrategy(128, 128, p)
+        counts = np.arange(40) + 1
+        
+        plot_avg_similarity_over_parameter("Stripe Count", mutationStrategiesMap, counts)
+
+    elif command == "stripe_annealing_over_p":
+        mutationStrategiesMap = lambda p: ColourStripesStrategy(128, 128, p)
+        counts = [1, 2, 3, 4, 5, 6, 7, 8]
+
+        plot_annealing_over_parameter("Stripe Count", mutationStrategiesMap, counts)
+
+    elif command == "blob_avg_over_p":
+        mutationStrategiesMap = lambda p: MoveBlobsStrategy(128, 128, p, white, recenter=True)
+        counts = [1, 2, 3, 4, 5, 6, 7, 8]
+
+        plot_avg_similarity_over_parameter("Blob Count", mutationStrategiesMap, counts)
+
+    elif command == "blob_annealing_over_p":
+        mutationStrategiesMap = lambda p: MoveBlobsStrategy(128, 128, p, white, recenter=True)
+        counts = [1, 2, 3, 4, 5, 6, 7, 8]
+
+        plot_annealing_over_parameter("Blob Count", mutationStrategiesMap, counts)
+
     elif command == "mds":
-        # https://www.geeksforgeeks.org/machine-learning/sklearn-multi-dimensional-scaling-mds-python-implementation-from-scratch/
-
-        # Load a sample dataset (e.g., the digits dataset)
-        #data = load_digits()
-        #X, y = data.data, data.target
-
-        scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
-
-        embeddings = []
-        sample_size = 32
-
-        # texts
-        noun_file = open("english-nouns.txt", "r")
-        nouns = noun_file.read().split("\n")
-        chosen_nouns = [nouns[int(len(nouns) * random.random())] for i in range(sample_size)]
-        print(chosen_nouns)
-
-        # images
+        
         strategies = [
-            RandomPixelFlipStrategy(128),
-            MoveBlobsStrategy(128, 5, white, recenter=True),
-            ColourStripesStrategy(128, 5),
-            ColourBlobs(128, 5)
+            RandomPixelFlipStrategy(128, 128),
+            MoveBlobsStrategy(128, 128, 5, white, recenter=True),
+            ColourStripesStrategy(128, 128, 5),
+            ColourBlobs(128, 128, 5)
         ]
 
-        images = []
-        for strategy in strategies:
-            for i in range(sample_size):
-                strategy.mutate_image(1)
-                images.append(strategy.render_image())
+        mds(strategies, "all")
 
-        legend = []
-        for i in range(1+ len(strategies)):
-            legend += [i] * sample_size
-        print(legend)
-        distanceMatrix = scoreSystem.distanceMatrix(chosen_nouns+images)
+    elif command == "stripe-mds":
+        counts = [1, 2, 3, 4, 5, 6, 7, 8]
+        strategies = [ColourStripesStrategy(128, 128, count) for count in counts]
 
-        mds = MDS(n_components=2)
-        X_reduced = mds.fit_transform(distanceMatrix)
+        mds(strategies, "stripe counts")
 
-        # Visualize the reduced data
-        plt.figure(figsize=(8, 6))
-        plt.scatter(X_reduced[:, 0], X_reduced[:, 1], c=legend, cmap=plt.cm.get_cmap("jet", max(legend) + 1))
-        plt.colorbar(label='Encoding source', ticks=range(10))
-        plt.title("MDS Visualization of Random Images from Each Representations")
-        plt.xlabel("MDS Dimension 1")
-        plt.ylabel("MDS Dimension 2")
+    elif command == "blobs-mds":
+        counts = [1, 2, 3, 8, 16, 32, 64]
+        strategies = [MoveBlobsStrategy(128, 128, count, white, recenter=True) for count in counts]
 
-        plt.savefig(f"plots/mds.png")
-        plt.show()
+        mds(strategies, "blob counts")
 
     else:
         print("Options:\n   * anneal {alternate/increasing-blob/blob/pixel} {prompt}\n   * measure_steps {pixel/blob}")
