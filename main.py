@@ -454,10 +454,10 @@ class ColourPoint(Blob):
         else:
             self.colour = [255 * random.random() for i in range(3)]
 
-    def random_mutate(self, temp):
-        super().random_mutate(temp, len(self.representation))
+    def random_mutate(self, temp, blobCount):
+        super().random_mutate(temp, blobCount)
 
-        if self.colour_fixed:
+        if not self.colour_fixed:
             for i in range(len(self.colour)):
                 step = int(255 * temp * self.tempAdjust * 2 * (random.random()-0.5))
                 self.colour[i] = min(max(0,self.colour[i] + step), 255)
@@ -540,8 +540,11 @@ class LocalSearchMethod():
         self.history = []
         self.best_history = []
         self.best_representation = None
+        
+        self.best_points_iteration = []
+        self.best_points_score = []
 
-    def update_best(self, representation=None, score=None, image=None, image_path=None):
+    def update_best(self, iteration, representation=None, score=None, image=None, image_path=None):
         if score == None:
             score = self.score
 
@@ -555,10 +558,15 @@ class LocalSearchMethod():
             self.best_score = score
             self.best_history.append(image)
 
+            self.best_points_iteration.append(iteration)
+            self.best_points_score.append(score)
+
             if image_path:
                 image.save(f"{image_path}/best.png","PNG")
 
     def save_history(self, name, path):
+
+        os.makedirs(f"images/{path}", exist_ok=True)
 
         self.history[0].save(f"images/{path}/{name}_GIF.gif", 
                 save_all = True, append_images = self.history[1:], 
@@ -589,7 +597,7 @@ class SimulatedAnnealing(LocalSearchMethod):
         mutationStrategy = self.mutationStrategy
         image = mutationStrategy.render_image()
         self.score = self.scoringSystem.score_image(image)
-        self.update_best(image=image, image_path=image_path)
+        self.update_best(0, image=image, image_path=image_path)
 
         initial_score = self.best_score
 
@@ -631,7 +639,7 @@ class SimulatedAnnealing(LocalSearchMethod):
             self.history.append(image)
             
             if self.score > self.best_score:
-                self.update_best(image=image, image_path=image_path)
+                self.update_best(i, image=image, image_path=image_path)
                 print(f"{i} {self.best_score}")
             
             if image_path:
@@ -714,7 +722,7 @@ def random_nouns(size):
     print(chosen_nouns)
     return chosen_nouns
 
-def mds(strategies, name, sample_size=32):
+def mds(name, strategies, strategyNames, sample_size=32):
     # https://www.geeksforgeeks.org/machine-learning/sklearn-multi-dimensional-scaling-mds-python-implementation-from-scratch/
 
     # Load a sample dataset (e.g., the digits dataset)
@@ -745,8 +753,13 @@ def mds(strategies, name, sample_size=32):
 
     # Visualize the reduced data
     plt.figure(figsize=(8, 6))
-    plt.scatter(X_reduced[:, 0], X_reduced[:, 1], c=legend, cmap=plt.cm.get_cmap("jet", max(legend) + 1))
-    plt.colorbar(label='Encoding source', ticks=range(10))
+
+    plt.scatter(X_reduced[0:sample_size, 0], X_reduced[0:sample_size, 1], label="Text")
+
+    for (i, strategyName) in enumerate(strategyNames):
+        plt.scatter(X_reduced[(i+1) * sample_size:(i+2) * sample_size, 0], X_reduced[(i+1) * sample_size:(i+2) * sample_size, 1], label=strategyName)
+    
+    plt.legend(loc='best')
     plt.title("MDS Visualization of Random Images from Each Representations")
     plt.xlabel("MDS Dimension 1")
     plt.ylabel("MDS Dimension 2")
@@ -754,14 +767,14 @@ def mds(strategies, name, sample_size=32):
     plt.savefig(f"plots/mds--{name}.png")
     plt.show()
 
-def plot_avg_similarity_over_parameter(name, mutationStrategiesMap, parameters):
+def plot_avg_similarity_over_parameter(name, mutationStrategiesMap, parameters, samples=256):
     scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
     
     means = []
 
     for p in parameters:
         mutationStrategy = mutationStrategiesMap(p)
-        sample = sample_distances(mutationStrategy, scoreSystem, samples=128, sample_size=1, temp=1)
+        sample = sample_distances(mutationStrategy, scoreSystem, samples=samples, sample_size=1, temp=1)
         means.append(statistics.mean(sample))
         print(f"{p}) mean: {statistics.mean(sample)}, stdev: {statistics.stdev(sample)}")
 
@@ -800,6 +813,74 @@ def plot_annealing_over_parameter(name, mutationStrategiesMap, parameters, itera
     plt.grid(axis = 'x')
 
     plt.savefig(f"plots/{name.replace(' ', '_')}--annealing.png")
+
+def race(name, strategies, strategyNames, prompt=None, iterations=500):
+
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+
+    if prompt == None:
+        prompt = random_nouns(1)[0]
+
+    for i, strategy in enumerate(strategies):
+        scores = []
+
+        scoreSystem.set_goal_text(prompt)
+        localSearch = SimulatedAnnealing(strategy, scoreSystem)
+        localSearch.search(alpha=0.99, max_iterations=iterations)
+        localSearch.save_history(strategyNames[i], f"race/{name}-{prompt}")
+
+        plt.plot(localSearch.best_points_iteration, localSearch.best_points_score, label=strategyNames[i])
+        plt.scatter(localSearch.best_points_iteration, localSearch.best_points_score)
+    
+    plt.title(f"Comparison of annealing for word '{prompt}' after {iterations} iterations")
+    plt.xlabel(f"Iteration")
+    plt.ylabel("CLIP similarity")
+    plt.grid(axis = 'x')
+    plt.legend(loc='best')
+
+    plt.savefig(f"plots/annealing_race--{name}-{prompt}.png")
+
+def anneal_boxplot(name, strategies, strategyNames, iterations=500, sample_size=16):
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+
+    nouns = random_nouns(sample_size)
+
+    strategyScores = []
+    for i, strategy in enumerate(strategies):
+        scores = []
+        for noun in nouns:
+            scoreSystem.set_goal_text(noun)
+            localSearch = SimulatedAnnealing(strategy, scoreSystem)
+            localSearch.search(alpha=0.99, max_iterations=iterations)
+            scores.append(localSearch.best_score)
+        strategyScores.append(scores)
+    
+    plt.boxplot(strategyScores, labels=strategyNames)
+
+    plt.title(f"Similarity after {iterations} iterations")
+    plt.xlabel(f"{name}")
+    plt.ylabel("CLIP similarity")
+    plt.grid(axis = 'x')
+
+    plt.savefig(f"plots/{name.replace(' ', '_')}--boxplot.png")
+
+def simmilarity_boxplot(name, strategies, strategyNames, sample_size=128):
+    scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+
+    strategyScores = []
+    for strategy in strategies:
+        sample = sample_distances(strategy, scoreSystem, samples=sample_size, sample_size=1, temp=1)
+        strategyScores.append(sample)
+    
+    plt.boxplot(strategyScores, labels=strategyNames)
+
+    plt.title(f"Comparison of similarity distributions within each representation")
+    plt.xlabel(f"{name}")
+    plt.ylabel("CLIP similarity")
+    plt.grid(axis = 'x')
+
+    plt.savefig(f"plots/{name.replace(' ', '_')}--similarity-boxplot.png")
+
 
 if __name__ == '__main__':
     command = sys.argv[1]
@@ -939,32 +1020,50 @@ if __name__ == '__main__':
 
     elif command == "blob_annealing_over_p":
         mutationStrategiesMap = lambda p: MoveBlobsStrategy(128, 128, p, white, recenter=True)
-        counts = [1, 2, 3, 4, 5, 6, 7, 8]
+        counts = [1, 6, 11, 16, 21, 26]
 
         plot_annealing_over_parameter("Blob Count", mutationStrategiesMap, counts)
 
-    elif command == "mds":
+    elif command == "compare":
+        strategyOption = sys.argv[2]
+        comparisonOption = sys.argv[3]
+
+        if strategyOption == "all":
+            strategies = [
+                RandomPixelFlipStrategy(128, 128),
+                MoveBlobsStrategy(128, 128, 4, white, recenter=True),
+                ColourStripesStrategy(128, 128, 4),
+                ColourBlobs(128, 128, 4)
+            ]
+            names = [
+                "Black-white pixels",
+                "Blobs",
+                "Stripes",
+                "Colour boundaries"
+            ]
+
+        elif strategyOption == "stripes":
+            counts = [1, 2, 3, 4, 5, 6, 7, 8]
+            strategies = [ColourStripesStrategy(128, 128, count) for count in counts]
+            names = [f"{count} stripes" for count in counts]
+
+        elif strategyOption == "blobs":
+            counts = [1, 2, 3, 4, 5, 6, 7, 8]
+            strategies = [MoveBlobsStrategy(128, 128, count, white, recenter=True) for count in counts]
+            names = [f"{count} blobs" for count in counts]
+
+        if comparisonOption == "mds":
+            mds(strategyOption, strategies, names)
         
-        strategies = [
-            RandomPixelFlipStrategy(128, 128),
-            MoveBlobsStrategy(128, 128, 5, white, recenter=True),
-            ColourStripesStrategy(128, 128, 5),
-            ColourBlobs(128, 128, 5)
-        ]
+        elif comparisonOption == "race":
+            prompt = sys.argv[4]
+            race(strategyOption, strategies, names, prompt=prompt)
 
-        mds(strategies, "all")
+        elif comparisonOption == "anneal_boxplot":
+            anneal_boxplot(strategyOption, strategies, names, iterations=500)
 
-    elif command == "stripe-mds":
-        counts = [1, 2, 3, 4, 5, 6, 7, 8]
-        strategies = [ColourStripesStrategy(128, 128, count) for count in counts]
-
-        mds(strategies, "stripe counts")
-
-    elif command == "blobs-mds":
-        counts = [1, 2, 3, 8, 16, 32, 64]
-        strategies = [MoveBlobsStrategy(128, 128, count, white, recenter=True) for count in counts]
-
-        mds(strategies, "blob counts")
+        elif comparisonOption == "similarity_boxplot":
+            simmilarity_boxplot(strategyOption, strategies, names)
 
     else:
         print("Options:\n   * anneal {alternate/increasing-blob/blob/pixel} {prompt}\n   * measure_steps {pixel/blob}")
