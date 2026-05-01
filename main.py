@@ -459,11 +459,11 @@ class ColourPoint(Blob):
 
         if not self.colour_fixed:
             for i in range(len(self.colour)):
-                step = int(255 * temp * self.tempAdjust * 2 * (random.random()-0.5))
+                step = int(max(1, 255 * temp * self.tempAdjust) * 2 * (random.random()-0.5))
                 self.colour[i] = min(max(0,self.colour[i] + step), 255)
 
 class ColourBlobs(MoveBlobsStrategy):
-    def __init__(self, sizeX, sizeY, blobCount=5, pallet=None):
+    def __init__(self, sizeX, sizeY, blobCount=5, pallet=None, blobPerColour=1):
         super().__init__(sizeX, sizeY, 0, black, recenter=False)
         
         self.representation = []
@@ -471,7 +471,8 @@ class ColourBlobs(MoveBlobsStrategy):
 
         if pallet:
             for colour in pallet:
-                self.representation.append(ColourPoint(self.sizeX, self.sizeY, colour=colour, colour_fixed=True))
+                for b in range(blobPerColour):
+                    self.representation.append(ColourPoint(self.sizeX, self.sizeY, colour=colour, colour_fixed=True))
         elif blobCount:
             for i in range(blobCount):
                 self.representation.append(ColourPoint(self.sizeX, self.sizeY))
@@ -507,15 +508,20 @@ class ColourBlobs(MoveBlobsStrategy):
 
 
 class ColourInsideMask(ColourBlobs):
-    def __init__(self, sizeX, sizeY, mask, pallet):
-        super().__init__(sizeX, sizeY, 0, black, recenter=False)
+    def __init__(self, sizeX, sizeY, mask, pallet=None, blobPerColour=1, blobCount=5):
+        super().__init__(sizeX, sizeY, 0, black)
         self.mask = mask
         
         self.representation = []
         self.best_representation = []
 
-        for colour in pallet:
-            self.representation.append(ColourPoint(self.sizeX, self.sizeY, colour=colour))
+        if pallet:
+            for colour in pallet:
+                for b in range(blobPerColour):
+                    self.representation.append(ColourPoint(self.sizeX, self.sizeY, colour=colour, colour_fixed=True))
+        elif blobCount:
+            for i in range(blobCount):
+                self.representation.append(ColourPoint(self.sizeX, self.sizeY))
 
     def render_image(self):
         colours = super().image_array()
@@ -527,6 +533,34 @@ class ColourInsideMask(ColourBlobs):
 
         return img
 
+class ColourShapeSimultaneous(MutationStrategy):
+    def __init__(self, sizeX, sizeY, colourBlobCount=5, shapeBlobCount=5, pallet=None):
+        self.shape = MoveBlobsStrategy(sizeX, sizeY, shapeBlobCount, white, recenter=True)
+        self.colour = ColourBlobs(sizeX, sizeY, blobCount=colourBlobCount, pallet=pallet)
+
+        self.representation = [self.shape.representation, self.colour.representation]
+
+    def mutate_image(self, temp):
+        self.shape.representation = self.representation[0]
+        self.colour.representation = self.representation[1]
+
+        self.shape.mutate_image(temp)
+        self.colour.mutate_image(temp)
+
+        self.representation = [self.shape.representation, self.colour.representation]
+
+    def render_image(self):
+        self.shape.representation = self.representation[0]
+        self.colour.representation = self.representation[1]
+
+        colours = self.colour.image_array()
+        mask = self.shape.as_mask()
+
+        img = np.where(mask[..., None] == 1, colours, black).astype(np.uint8)
+        
+        img = Image.fromarray(img)
+
+        return img
 
 # Local search methods
 class LocalSearchMethod():
@@ -622,7 +656,7 @@ class SimulatedAnnealing(LocalSearchMethod):
                 # optimum step
                 random_prob = 1
             
-            if random.random() < random_prob or no_change_count > MAX_NO_CHANGE :
+            if random.random() < random_prob or (MAX_NO_CHANGE and no_change_count > MAX_NO_CHANGE):
                 # Take step
                 self.score = score
                 no_change_count = 0
@@ -814,7 +848,7 @@ def plot_annealing_over_parameter(name, mutationStrategiesMap, parameters, itera
 
     plt.savefig(f"plots/{name.replace(' ', '_')}--annealing.png")
 
-def race(name, strategies, strategyNames, prompt=None, iterations=500):
+def race(name, strategies, strategyNames, prompt=None, alpha=0.99, iterations=500):
 
     scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
 
@@ -826,7 +860,7 @@ def race(name, strategies, strategyNames, prompt=None, iterations=500):
 
         scoreSystem.set_goal_text(prompt)
         localSearch = SimulatedAnnealing(strategy, scoreSystem)
-        localSearch.search(alpha=0.99, max_iterations=iterations)
+        localSearch.search(alpha=alpha, max_iterations=iterations)
         localSearch.save_history(strategyNames[i], f"race/{name}-{prompt}")
 
         plt.plot(localSearch.best_points_iteration, localSearch.best_points_score, label=strategyNames[i])
@@ -888,87 +922,113 @@ if __name__ == '__main__':
     if command == "anneal":
         # Compute similarities
 
-        options = ["alternate", "increasing-blob", "coloured-blob", "blob", "pixel", "stripes"]
+ 
+        prompt = sys.argv[3]
+        imageDir = prompt
 
-        if sys.argv[2] in options:
-            prompt = sys.argv[3]
-            imageDir = prompt
+        # Path
+        path = os.path.join("images", imageDir)
+        
+        # Create the directory
+        os.makedirs(path, exist_ok=True)
+        
+        scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
+        scoreSystem.set_goal_text(prompt)
 
-            # Path
-            path = os.path.join("images", imageDir)
+        if sys.argv[2] == "alternate":
+            alternate_blobs_pixels(scoreSystem, imageDir, 10)
+
+        elif sys.argv[2] == "increasing-blob":
+            iterations = int(sys.argv[4])
+            groupSize = int(sys.argv[5])
+            mutationStrategy = MoveBlobsStrategy(128, 128, groupSize, white, recenter=True)                
+            localSearch = SimulatedAnnealing(copy.deepcopy(mutationStrategy), scoreSystem)
+
+            for i in range(iterations):
+                localSearch.search(alpha=1 - 0.1/(i+1), initial_temp=1 - (i/iterations)**2)
+                localSearch.save_history("increasing-blob", f"{imageDir}/")
+                
+                for blob in localSearch.mutationStrategy.representation:
+                    blob.tempAdjust = blob.tempAdjust * 0.75
+
+                for g in range(groupSize):
+                    localSearch.mutationStrategy.add_blob()
+
+        elif sys.argv[2] == "coloured-blob":
+            blobCount = 3
+            if len(sys.argv) > 4:
+                blobCount = int(sys.argv[4])
+            blobsStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
+
+            stripeCount = 5
+            if len(sys.argv) > 5:
+                stripeCount = int(sys.argv[5])
+            stripesStrategy = ColourStripesStrategy(128, 128, stripeCount)
+
+            localSearch = SimulatedAnnealing(blobsStrategy, scoreSystem)
+            localSearch.search(alpha=0.99)
+            localSearch.save_history("coloured-blob--shape", f"{imageDir}/")
+            mask = blobsStrategy.as_mask(localSearch.best_representation)
+
+            localSearch = SimulatedAnnealing(stripesStrategy, scoreSystem)
+            localSearch.search(alpha=0.99)
+            localSearch.save_history("coloured-blob--colour", f"{imageDir}/")
+            pallet = copy.deepcopy(localSearch.best_representation)
             
-            # Create the directory
-            os.makedirs(path, exist_ok=True)
+            colouringStrategy = ColourInsideMask(128, 128, mask, pallet=pallet, blobPerColour=2)
+            localSearch = SimulatedAnnealing(colouringStrategy, scoreSystem)
+            localSearch.search(alpha=0.99)
+            localSearch.save_history("coloured-blob", f"{imageDir}/")
+
+        elif sys.argv[2] == "fixed-colour-blob":
+            stripeCount = 5
+            if len(sys.argv) > 4:
+                stripeCount = int(sys.argv[4])
+            stripesStrategy = ColourStripesStrategy(128, 128, stripeCount)
+
+            localSearch = SimulatedAnnealing(stripesStrategy, scoreSystem)
+            localSearch.search(alpha=0.99)
+            localSearch.save_history("coloured-blob--colour", f"{imageDir}/")
+            pallet = copy.deepcopy(localSearch.best_representation)
             
-            scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
-            scoreSystem.set_goal_text(prompt)
+            blobCount = 5
+            if len(sys.argv) > 5:
+                blobCount = int(sys.argv[5])
+            blobsStrategy = ColourShapeSimultaneous(128, 128, shapeBlobCount=blobCount, pallet=pallet)
 
-            if sys.argv[2] == "alternate":
-                alternate_blobs_pixels(scoreSystem, imageDir, 10)
+            localSearch = SimulatedAnnealing(blobsStrategy, scoreSystem)
+            localSearch.search(alpha=0.99)
+            localSearch.save_history("coloured-blob", f"{imageDir}/")
 
-            elif sys.argv[2] == "increasing-blob":
-                iterations = int(sys.argv[4])
-                groupSize = int(sys.argv[5])
-                mutationStrategy = MoveBlobsStrategy(128, 128, groupSize, white, recenter=True)                
-                localSearch = SimulatedAnnealing(copy.deepcopy(mutationStrategy), scoreSystem)
 
-                for i in range(iterations):
-                    localSearch.search(alpha=1 - 0.1/(i+1), initial_temp=1 - (i/iterations)**2)
-                    localSearch.save_history("increasing-blob", f"{imageDir}/")
-                    
-                    for blob in localSearch.mutationStrategy.representation:
-                        blob.tempAdjust = blob.tempAdjust * 0.75
-
-                    for g in range(groupSize):
-                        localSearch.mutationStrategy.add_blob()
-
-            elif sys.argv[2] == "coloured-blob":
+        else:
+            if sys.argv[2] == "blob":
                 blobCount = 3
                 if len(sys.argv) > 4:
                     blobCount = int(sys.argv[4])
-                blobsStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
+                mutationStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
+            elif sys.argv[2] == "pixel":
+                mutationStrategy = RandomPixelFlipStrategy(128, 128)
+            elif sys.argv[2] == "stripes":
+                stripeCount = 3
+                if len(sys.argv) > 4:
+                    stripeCount = int(sys.argv[4])
 
-                stripeCount = 5
+                mutationStrategy = ColourStripesStrategy(128, 128, stripeCount)
+            elif sys.argv[2] == "colourShape":
+                coloursBlobCount = 5
+                if len(sys.argv) > 4:
+                    coloursBlobCountblobCount = int(sys.argv[4])
+                shapeBlobCount = 5
                 if len(sys.argv) > 5:
-                    stripeCount = int(sys.argv[5])
-                stripesStrategy = ColourStripesStrategy(128, 128, stripeCount)
-
-                localSearch = SimulatedAnnealing(blobsStrategy, scoreSystem)
-                localSearch.search(alpha=0.99)
-                localSearch.save_history("coloured-blob--shape", f"{imageDir}/")
-                mask = blobsStrategy.as_mask(localSearch.best_representation)
-
-                localSearch = SimulatedAnnealing(stripesStrategy, scoreSystem)
-                localSearch.search(alpha=0.99)
-                localSearch.save_history("coloured-blob--colour", f"{imageDir}/")
-                pallet = copy.deepcopy(localSearch.best_representation)
+                    shapeBlobCountblobCount = int(sys.argv[5])
                 
-                colouringStrategy = ColourInsideMask(128, 128, mask, pallet)
-                localSearch = SimulatedAnnealing(colouringStrategy, scoreSystem)
-                localSearch.search(alpha=0.99)
-                localSearch.save_history("coloured-blob", f"{imageDir}/")
+                mutationStrategy = ColourShapeSimultaneous(128, 128, colourBlobCount=coloursBlobCount, shapeBlobCount=shapeBlobCount)
 
-            else:
-                if sys.argv[2] == "blob":
-                    blobCount = 3
-                    if len(sys.argv) > 4:
-                        blobCount = int(sys.argv[4])
-                    mutationStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
-                elif sys.argv[2] == "pixel":
-                    mutationStrategy = RandomPixelFlipStrategy(128, 128)
-                elif sys.argv[2] == "stripes":
-                    stripeCount = 3
-                    if len(sys.argv) > 4:
-                        stripeCount = int(sys.argv[4])
+            localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
+            localSearch.search(alpha=0.995)
 
-                    mutationStrategy = ColourStripesStrategy(128, 128, stripeCount)
-
-                localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
-                localSearch.search(alpha=0.99)
-
-                localSearch.save_history(sys.argv[2], f"{imageDir}/")
-        else:
-            print(f"anneal options are: {', '.join(options)}")
+            localSearch.save_history(sys.argv[2], f"{imageDir}/")
 
     elif command == "measure_steps":
         scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
@@ -1033,13 +1093,15 @@ if __name__ == '__main__':
                 RandomPixelFlipStrategy(128, 128),
                 MoveBlobsStrategy(128, 128, 4, white, recenter=True),
                 ColourStripesStrategy(128, 128, 4),
-                ColourBlobs(128, 128, 4)
+                ColourBlobs(128, 128, 4),
+                ColourShapeSimultaneous(128, 128),
             ]
             names = [
                 "Black-white pixels",
                 "Blobs",
                 "Stripes",
-                "Colour boundaries"
+                "Colour boundaries",
+                "Colour shape"
             ]
 
         elif strategyOption == "stripes":
@@ -1057,7 +1119,7 @@ if __name__ == '__main__':
         
         elif comparisonOption == "race":
             prompt = sys.argv[4]
-            race(strategyOption, strategies, names, prompt=prompt)
+            race(strategyOption, strategies, names, prompt=prompt, alpha=0.995, iterations=1500)
 
         elif comparisonOption == "anneal_boxplot":
             anneal_boxplot(strategyOption, strategies, names, iterations=500)
