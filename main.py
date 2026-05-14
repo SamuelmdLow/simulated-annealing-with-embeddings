@@ -144,7 +144,7 @@ class ColourStripesStrategy(MutationStrategy):
         for colour in self.representation:
             if random.random() < temp:
                 for i in range(len(colour)):
-                    step = int(255 * temp * 2 * (random.random()-0.5))
+                    step = int(max(1, 255 * temp) * 2 * (random.random()-0.5))
                     colour[i] = min(max(0,colour[i] + step), 255)
 
     def render_image(self):
@@ -255,9 +255,9 @@ class Blob():
         if self.radius <= 1:
             self.radius = self.radius + random.randint(0, step_size)
         elif self.radius > max(self.image_sizeX, self.image_sizeY) // 4:
-            self.radius = self.radius + random.randint(-step_size, 0)
+            self.radius = max(0.5, self.radius + random.randint(-step_size, 0))
         else:
-            self.radius = self.radius + random.randint(-step_size, step_size)
+            self.radius = max(0.5, self.radius + random.randint(-step_size, step_size))
 
     def rotate(self, rotation):
         opposite = self.x - (self.image_sizeX/2)
@@ -298,12 +298,13 @@ class Blob():
 
 class MoveBlobsStrategy(MutationStrategy):
 
-    def __init__(self, sizeX, sizeY, blob_count, colour, recenter=False):
+    def __init__(self, sizeX, sizeY, blob_count, colour, recenter=False, freeBlobCount=False):
         super().__init__(sizeX, sizeY)
         self.representation = []
         self.best_representation = []
         self.colour = colour
         self.recenter = recenter
+        self.freeBlobCount = freeBlobCount
         
         for i in range(blob_count):
             self.add_blob()
@@ -350,6 +351,22 @@ class MoveBlobsStrategy(MutationStrategy):
 
     def mutate_image(self, temp):
         if temp > 0:
+
+            if self.freeBlobCount:
+                if random.random() < temp:
+                    if random.random() < 0.5 and len(self.representation) > 1:
+                        rand = random.random() * sum(map(lambda b: b.radius**2, self.representation))
+                        
+                        areaSum = 0
+                        for i, blob in enumerate(self.representation):
+                            areaSum += blob.radius ** 2
+                            if rand <= areaSum:
+                                self.representation.pop(i)
+                                break
+
+                    else:
+                        self.representation.append(copy.deepcopy(self.representation[random.randint(0, len(self.representation)-1)]))
+
             for blob in self.representation:
                 blob.random_mutate(temp, len(self.representation))
 
@@ -406,21 +423,6 @@ class MoveBlobsStrategy(MutationStrategy):
         return cells
 
     def render_image(self):
-        '''
-        image = self.baseImage.copy()
-        px = image.load()
-        
-        for px_y in range(image.height):
-            for px_x in range(image.width):
-
-                dist = sum(blob.effect(px_x, px_y) for blob in self.representation)
-
-                if dist > 1:
-                    px[px_x, px_y] = self.colour
-
-        return image
-        '''
-
         base = np.asarray(self.baseImage)
 
         xs = np.arange(self.sizeX)
@@ -455,16 +457,17 @@ class ColourPoint(Blob):
             self.colour = [255 * random.random() for i in range(3)]
 
     def random_mutate(self, temp, blobCount):
+        MIN_COLOUR_STEP = 3
         super().random_mutate(temp, blobCount)
 
         if not self.colour_fixed:
             for i in range(len(self.colour)):
-                step = int(max(1, 255 * temp * self.tempAdjust) * 2 * (random.random()-0.5))
+                step = int(max(MIN_COLOUR_STEP, 255 * temp * self.tempAdjust) * 2 * (random.random()-0.5))
                 self.colour[i] = min(max(0,self.colour[i] + step), 255)
 
 class ColourBlobs(MoveBlobsStrategy):
-    def __init__(self, sizeX, sizeY, blobCount=5, pallet=None, blobPerColour=1):
-        super().__init__(sizeX, sizeY, 0, black, recenter=False)
+    def __init__(self, sizeX, sizeY, blobCount=5, pallet=None, blobPerColour=1, freeBlobCount=False):
+        super().__init__(sizeX, sizeY, 0, black, recenter=False, freeBlobCount=freeBlobCount)
         
         self.representation = []
         self.best_representation = []
@@ -534,11 +537,38 @@ class ColourInsideMask(ColourBlobs):
         return img
 
 class ColourShapeSimultaneous(MutationStrategy):
-    def __init__(self, sizeX, sizeY, colourBlobCount=5, shapeBlobCount=5, pallet=None):
-        self.shape = MoveBlobsStrategy(sizeX, sizeY, shapeBlobCount, white, recenter=True)
-        self.colour = ColourBlobs(sizeX, sizeY, blobCount=colourBlobCount, pallet=pallet)
+    def __init__(self, sizeX, sizeY, colourBlobCount=5, shapeBlobCount=5, pallet=None, freeBlobCount=False):
+
+        self.sizeX = sizeX
+        self.sizeY = sizeY
+
+        self.shape = MoveBlobsStrategy(sizeX, sizeY, shapeBlobCount, white, recenter=True, freeBlobCount=freeBlobCount)
+        self.colour = ColourBlobs(sizeX, sizeY, blobCount=colourBlobCount, pallet=pallet, freeBlobCount=freeBlobCount)
 
         self.representation = [self.shape.representation, self.colour.representation]
+
+    def recenter_blobs(self):
+        minX = min([blob.x - blob.radius for blob in self.representation[0]])
+        maxX = max([blob.x + blob.radius for blob in self.representation[0]])
+        minY = min([blob.y - blob.radius for blob in self.representation[0]])
+        maxY = max([blob.y + blob.radius for blob in self.representation[0]])
+
+        width = maxX-minX
+        height = maxY-minY
+        offsetX = minX + width/2 - (self.sizeX/2)
+        offsetY = minY + height/2 - (self.sizeY/2)
+
+        for blob in self.representation[0] + self.representation[1]:
+            blob.x -= offsetX
+            blob.y -= offsetY
+
+        if width > self.sizeX or height > self.sizeY:
+            scale = min(self.sizeX/width, self.sizeY/height)
+
+            for blob in self.representation[0] + self.representation[1]:
+                blob.x = self.sizeX/2 + (blob.x - self.sizeX/2) * scale
+                blob.y = self.sizeY/2 + (blob.y - self.sizeY/2) * scale
+                blob.radius = blob.radius * scale
 
     def mutate_image(self, temp):
         self.shape.representation = self.representation[0]
@@ -548,8 +578,9 @@ class ColourShapeSimultaneous(MutationStrategy):
         self.colour.mutate_image(temp)
 
         self.representation = [self.shape.representation, self.colour.representation]
+        self.recenter_blobs()
 
-    def render_image(self):
+    def image_array(self):
         self.shape.representation = self.representation[0]
         self.colour.representation = self.representation[1]
 
@@ -558,6 +589,11 @@ class ColourShapeSimultaneous(MutationStrategy):
 
         img = np.where(mask[..., None] == 1, colours, black).astype(np.uint8)
         
+        return img
+    
+    def render_image(self):
+        img = self.image_array()
+
         img = Image.fromarray(img)
 
         return img
@@ -596,7 +632,7 @@ class LocalSearchMethod():
             self.best_points_score.append(score)
 
             if image_path:
-                image.save(f"{image_path}/best.png","PNG")
+                image.save(f"images/{image_path}/best.png","PNG")
 
     def save_history(self, name, path):
 
@@ -622,9 +658,10 @@ class SimulatedAnnealing(LocalSearchMethod):
     def search(self, image_path=None, alpha=0.95, initial_temp=1, min_temp=0.0000001, max_iterations=None, satisfying_score=1):
         MIN_DELTA = 0.005
         MAX_NO_CHANGE = 15
+        RESTART_TRIGGER = 0.05
 
         if image_path:
-            os.makedirs(image_path, exist_ok=True)        
+            os.makedirs(f"images/{image_path}", exist_ok=True)        
 
         temp = initial_temp
 
@@ -656,9 +693,15 @@ class SimulatedAnnealing(LocalSearchMethod):
                 # optimum step
                 random_prob = 1
             
-            if random.random() < random_prob or (MAX_NO_CHANGE and no_change_count > MAX_NO_CHANGE):
+            at_max = MAX_NO_CHANGE and no_change_count > MAX_NO_CHANGE
+
+            if random.random() < random_prob or (at_max and RESTART_TRIGGER > self.best_score - score):
                 # Take step
                 self.score = score
+                no_change_count = 0
+            elif at_max:
+                self.score = self.best_score
+                mutationStrategy.representation = copy.deepcopy(self.best_representation)
                 no_change_count = 0
             else:
                 # Revert step
@@ -676,22 +719,74 @@ class SimulatedAnnealing(LocalSearchMethod):
                 self.update_best(i, image=image, image_path=image_path)
                 print(f"{i} {self.best_score}")
             
-            if image_path:
-                #image.save(f"{image_path}/{i}.png","PNG")
-                gif.append(image)
-
             if max_iterations and i >= max_iterations:
                 break
 
         mutationStrategy.representation = copy.deepcopy(self.best_representation)
         
-
         print(f'{round(((self.best_score-initial_score)/initial_score) * 100, 4)}% improvement\n  - {initial_score}\n  - {self.best_score}')
 
-        if image_path:
-            gif[0].save(f"{image_path}/GIF.gif", 
-                        save_all = True, append_images = gif[1:], 
-                        optimize = False, duration = 10) 
+def final_refinement(image_array, pallet, scoringSystem, path):   
+    width = image_array.shape[0]
+    height = image_array.shape[1]
+    score = scoringSystem.score_image(Image.fromarray(image_array))
+
+    history = []
+    while True:
+        og_image = copy.deepcopy(image_array)
+        for y in range(height):
+            for x in range(width):
+
+                adjacent = [image_array[y][x]]
+
+                notArrayInArray = lambda element, array: not True in [np.array_equal(element, e) for e in array]
+
+                if x > 0:
+                    if notArrayInArray(image_array[y][x-1], adjacent):
+                        adjacent.append(image_array[y][x-1])
+
+                if x < width-1:
+                    if notArrayInArray(image_array[y][x+1], adjacent):
+                        adjacent.append(image_array[y][x+1])
+
+                if y > 0:
+                    if notArrayInArray(image_array[y-1][x], adjacent):
+                        adjacent.append(image_array[y-1][x])
+
+                if y < height-1:
+                    if notArrayInArray(image_array[y+1][x], adjacent):
+                        adjacent.append(image_array[y+1][x])
+
+                if len(adjacent) > 1:
+                    attempts = []
+                    for colour in adjacent:
+                        newImage = copy.deepcopy(image_array)
+                        newImage[y][x] = colour
+                        attempts.append(newImage)
+
+                    renderedAttempts = [Image.fromarray(img) for img in attempts]
+                    similarities = scoringSystem.score_images(renderedAttempts)
+                    
+                    bestIndex = np.argmax(similarities)
+                    image_array = attempts[bestIndex]
+                    renderedAttempts[bestIndex].save(f"images/{path}/best.png", "PNG")
+                    history.append(renderedAttempts[bestIndex])
+
+                    currentScore = similarities[bestIndex][0]
+                    print(f"{x},{y}: {currentScore} {pallet[bestIndex]}")
+        
+        print(f"{((currentScore-score)/score)*100}%,  {score} to {currentScore}")
+
+        history[0].save(f"images/{path}/refinementGIF.gif", 
+        save_all = True, append_images = history[1:], 
+        optimize = False, duration = 10)
+
+        if currentScore == score:
+            break
+
+        score = currentScore 
+
+
 
 def generate_mutation(baseMutationStrategy, temp):
     #start = time.time()
@@ -923,7 +1018,7 @@ if __name__ == '__main__':
         # Compute similarities
 
  
-        prompt = sys.argv[3]
+        prompt = sys.argv[3].replace("_", " ")
         imageDir = prompt
 
         # Path
@@ -1005,7 +1100,11 @@ if __name__ == '__main__':
             if sys.argv[2] == "blob":
                 blobCount = 3
                 if len(sys.argv) > 4:
-                    blobCount = int(sys.argv[4])
+                    if sys.argv[4] == "free":
+                        mutationStrategy = MoveBlobsStrategy(128, 128, 2, white, recenter=True, freeBlobCount=True)
+                    else:
+                        blobCount = int(sys.argv[4])
+                        mutationStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
                 mutationStrategy = MoveBlobsStrategy(128, 128, blobCount, white, recenter=True)
             elif sys.argv[2] == "pixel":
                 mutationStrategy = RandomPixelFlipStrategy(128, 128)
@@ -1023,12 +1122,18 @@ if __name__ == '__main__':
                 if len(sys.argv) > 5:
                     shapeBlobCountblobCount = int(sys.argv[5])
                 
-                mutationStrategy = ColourShapeSimultaneous(128, 128, colourBlobCount=coloursBlobCount, shapeBlobCount=shapeBlobCount)
+                mutationStrategy = ColourShapeSimultaneous(128, 128, colourBlobCount=coloursBlobCount, shapeBlobCount=shapeBlobCount, freeBlobCount=True)
 
             localSearch = SimulatedAnnealing(mutationStrategy, scoreSystem)
-            localSearch.search(alpha=0.995)
+            localSearch.search(alpha=0.995, max_iterations=2500, image_path=imageDir)
 
             localSearch.save_history(sys.argv[2], f"{imageDir}/")
+
+
+            #image_array = np.asarray(localSearch.best_history[-1])
+            #pallet = [point.colour for point in localSearch.best_representation[1]]
+            #pallet = pallet + [black]
+            #final_refinement(image_array, pallet, scoreSystem, imageDir)
 
     elif command == "measure_steps":
         scoreSystem = EmbeddingsScoring("clip-ViT-B-32")
@@ -1114,12 +1219,15 @@ if __name__ == '__main__':
             strategies = [MoveBlobsStrategy(128, 128, count, white, recenter=True) for count in counts]
             names = [f"{count} blobs" for count in counts]
 
+            strategies.append(MoveBlobsStrategy(128, 128, 5, white, recenter=True, freeBlobCount=True))
+            names.append("free blob count")
+
         if comparisonOption == "mds":
             mds(strategyOption, strategies, names)
         
         elif comparisonOption == "race":
             prompt = sys.argv[4]
-            race(strategyOption, strategies, names, prompt=prompt, alpha=0.995, iterations=1500)
+            race(strategyOption, strategies, names, prompt=prompt, alpha=0.995, iterations=1000)
 
         elif comparisonOption == "anneal_boxplot":
             anneal_boxplot(strategyOption, strategies, names, iterations=500)
